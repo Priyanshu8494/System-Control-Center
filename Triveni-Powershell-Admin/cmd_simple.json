@@ -1,0 +1,4 @@
+{
+    "hostnames": ["TGS019"],
+    "command": "powershell -Command \"echo hello\""
+}

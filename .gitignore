@@ -1,0 +1,38 @@
+# Go binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+*.out
+
+# Node.js
+node_modules/
+dist/
+.npm
+.env
+.env.*
+
+# Vendor
+vendor/
+
+# Temporary files
+tmp/
+*~
+*.swp
+
+# IDE specific
+.vscode/
+.idea/
+
+# Downloaded agent binary
+downloads/*.exe
+!downloads/.gitkeep

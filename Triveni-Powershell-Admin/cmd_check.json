@@ -1,0 +1,4 @@
+{
+    "hostnames": ["TRIVENI119"],
+    "command": "powershell -Command \"echo check\""
+}

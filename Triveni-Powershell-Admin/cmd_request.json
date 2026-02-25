@@ -1,0 +1,4 @@
+{
+    "hostnames": ["TGS019"],
+    "command": "powershell -Command \"Get-Content (Get-ChildItem $env:TEMP\\TriveniUpdate_*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName\""
+}
