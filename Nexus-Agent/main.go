@@ -27,7 +27,7 @@ import (
 // Agent configuration
 const (
 	AgentVersion  = "0.0.14"
-	ServiceName   = "SystemAgent"
+	ServiceName   = "NexusAgent"
 	ServerURL     = "http://192.168.1.4:8080/api/heartbeat"
 	ResultURL     = "http://192.168.1.4:8080/api/command/result"
 	ScreenshotURL = "http://192.168.1.4:8080/api/agent/screenshot"
@@ -69,7 +69,7 @@ func runAgent() {
 		log.SetOutput(logFile)
 	}
 
-	log.Printf("Starting System Agent v%s (Service Mode)...\n", AgentVersion)
+	log.Printf("Starting Nexus Agent v%s (Service Mode)...\n", AgentVersion)
 
 	// Check if running as Admin
 	isAdmin := "No"
@@ -663,7 +663,7 @@ func main() {
 		err = svc.Run(ServiceName, &myService{})
 		if err != nil {
 			// Log to Event Log or File if Service Start Fails
-			f, _ := os.OpenFile("c:\\SystemAgentServiceError.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+			f, _ := os.OpenFile("c:\\NexusAgentServiceError.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 			f.WriteString(fmt.Sprintf("Service Start Failed: %v\n", err))
 			f.Close()
 		}
@@ -685,7 +685,7 @@ func main() {
 	}()
 
 	cwd, _ := os.Getwd()
-	log.Printf("Starting System Agent v%s in %s (Interactive Mode)\n", AgentVersion, cwd)
+	log.Printf("Starting Nexus Agent v%s in %s (Interactive Mode)\n", AgentVersion, cwd)
 
 	// REMOVED: Self-Elevation Check (RunAs Admin) to avoid UAC Prompts
 	// User must install as Service for Admin rights.

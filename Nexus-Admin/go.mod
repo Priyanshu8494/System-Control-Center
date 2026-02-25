@@ -1,4 +1,4 @@
-module triveni-admin
+module nexus-admin
 
 go 1.25.6
 

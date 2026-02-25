@@ -163,7 +163,7 @@ function App() {
                 <Shield size={18} strokeWidth={2.5} />
               </div>
               <div>
-                <h1 className="text-sm font-bold tracking-tight uppercase leading-tight">OnPremX</h1>
+                <h1 className="text-sm font-bold tracking-tight uppercase leading-tight">Nexus RMM</h1>
                 <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium italic lowercase">by priyanshu</p>
               </div>
             </div>
@@ -228,7 +228,7 @@ function App() {
               </span>
 
               <a 
-                href="/dl/System-Agent.exe" 
+                href="/dl/Nexus-Agent.exe" 
                 download
                 className="flex items-center gap-2 px-4 py-2 bg-emerald-600/10 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-emerald-600 hover:text-white dark:hover:bg-emerald-600 dark:hover:text-white transition-all shadow-sm"
               >
