@@ -22,12 +22,12 @@ import (
 var db *gorm.DB
 
 // JWT Secret Key (Change this in production)
-var jwtSecretKey = []byte("NexusSuperSecretKey2026")
+var jwtSecretKey = []byte("OnPremXSuperSecretKey2026")
 
 // Login Credentials
 const (
 	AdminUsername = "admin"
-	AdminPassword = "nx@123"
+	AdminPassword = "opx@123"
 )
 
 // Login Request
@@ -166,7 +166,7 @@ var (
 
 func main() {
 	var err error
-	db, err = gorm.Open(sqlite.Open("nexus.db"), &gorm.Config{})
+	db, err = gorm.Open(sqlite.Open("onpremx.db"), &gorm.Config{})
 	if err != nil {
 		panic("failed to connect database")
 	}
@@ -613,13 +613,13 @@ func main() {
 				}
 
 				// PowerShell Update Command (Service-Aware & Path-Agnostic)
-				downloadURL := "http://192.168.1.4:8080/dl/Nexus-Agent.exe"
+				downloadURL := "http://192.168.1.4:8080/dl/OnPremX-Agent.exe"
 
 				// Note: We use [[BT]] as a placeholder for backtick (`) because we can't use backticks inside a Go raw string literal.
 				updateCmdTemplate := `
 $url = "%s";
 $tempDir = [System.IO.Path]::GetTempPath();
-$dest = Join-Path $tempDir "Nexus-Agent.new.exe";
+$dest = Join-Path $tempDir "OnPremX-Agent.new.exe";
 $script = Join-Path $tempDir "update_agent.ps1";
 $log = Join-Path $tempDir "update_log.txt";
 
@@ -638,7 +638,7 @@ try {
 Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command & {
     [[BT]]$url = '$url'
     [[BT]]$tempDir = [System.IO.Path]::GetTempPath()
-    [[BT]]$dest = Join-Path [[BT]]$tempDir 'Nexus-Agent.new.exe'
+    [[BT]]$dest = Join-Path [[BT]]$tempDir 'OnPremX-Agent.new.exe'
     [[BT]]$script = Join-Path [[BT]]$tempDir 'update_agent_elevated.ps1'
     
     # Download again in elevated context to be safe or just pass path? Better pass path.
@@ -646,13 +646,13 @@ Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy 
     Invoke-WebRequest -Uri [[BT]]$url -OutFile [[BT]]$dest -ErrorAction Stop
 
     # Stop Service
-    Stop-Service -Name 'NexusAgent' -Force -ErrorAction SilentlyContinue
-    Get-Process -Name 'Nexus-Agent' -ErrorAction SilentlyContinue | Stop-Process -Force
+    Stop-Service -Name 'OnPremXAgent' -Force -ErrorAction SilentlyContinue
+    Get-Process -Name 'OnPremX-Agent' -ErrorAction SilentlyContinue | Stop-Process -Force
 
     # Find Original Path (We need to find it again or pass it)
-    [[BT]]$originalExePath = '$((Get-Process -Name "Nexus-Agent" -ErrorAction SilentlyContinue).Path)'
+    [[BT]]$originalExePath = '$((Get-Process -Name "OnPremX-Agent" -ErrorAction SilentlyContinue).Path)'
     if (-not [[BT]]$originalExePath) {
-        [[BT]]$svc = Get-WmiObject win32_service | Where-Object { [[BT]]$_.Name -eq 'NexusAgent' }
+        [[BT]]$svc = Get-WmiObject win32_service | Where-Object { [[BT]]$_.Name -eq 'OnPremXAgent' }
         if ([[BT]]$svc) {
              [[BT]]$path = [[BT]]$svc.PathName -replace '"',''
              if ([[BT]]$path -match '^(.*\.exe)') { [[BT]]$path = [[BT]]$matches[1] }
@@ -662,14 +662,14 @@ Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy 
     
     if (-not [[BT]]$originalExePath) {
          # Fallback default
-         [[BT]]$originalExePath = 'C:\Program Files\Nexus Agent\Nexus-Agent.exe'
+         [[BT]]$originalExePath = 'C:\Program Files\OnPremX Agent\OnPremX-Agent.exe'
     }
 
     # Replace
     Move-Item -Path [[BT]]$dest -Destination [[BT]]$originalExePath -Force
     
     # Restart
-    Start-Service -Name 'NexusAgent' -ErrorAction SilentlyContinue
+    Start-Service -Name 'OnPremXAgent' -ErrorAction SilentlyContinue
     Start-Process [[BT]]$originalExePath -WindowStyle Hidden
 }"
 "@
@@ -681,14 +681,14 @@ Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy 
     $originalExePath = $null
     
     # 1. Try to find running process
-    $proc = Get-Process -Name "Nexus-Agent" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $proc = Get-Process -Name "OnPremX-Agent" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($proc) {
         $originalExePath = $proc.Path
     }
     
     # 2. If process not found (e.g. stopped service), try Service Config
     if (-not $originalExePath) {
-        $serviceName = "NexusAgent"
+        $serviceName = "OnPremXAgent"
         $svc = Get-WmiObject win32_service | Where-Object { $_.Name -eq $serviceName }
         if ($svc) {
              $path = $svc.PathName -replace '"',''
@@ -699,7 +699,7 @@ Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy 
     
     # 3. Fallback: Check standard install location (Program Files)
     if (-not $originalExePath) {
-        $progFiles = "C:\Program Files\Nexus Agent\Nexus-Agent.exe"
+        $progFiles = "C:\Program Files\OnPremX Agent\OnPremX-Agent.exe"
         if (Test-Path $progFiles) {
             $originalExePath = $progFiles
         }
@@ -707,11 +707,11 @@ Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy 
     
     # Safety Check: Do NOT overwrite PowerShell
     if ($originalExePath -like "*powershell.exe") {
-        Throw "Error: Detected path is PowerShell, not Nexus-Agent."
+        Throw "Error: Detected path is PowerShell, not OnPremX-Agent."
     }
     
     if (-not $originalExePath) {
-        Throw "Could not find Nexus-Agent executable path. Is the agent installed/running?"
+        Throw "Could not find OnPremX-Agent executable path. Is the agent installed/running?"
     }
     
     Write-Output "Target Agent Path: $originalExePath";
@@ -727,15 +727,15 @@ Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy 
     $updateScript = @"
 [[BT]]$ErrorActionPreference = 'Stop'
 [[BT]]$tempDir = [System.IO.Path]::GetTempPath()
-[[BT]]$logPath = "[[BT]]$tempDir\NexusUpdate_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+[[BT]]$logPath = "[[BT]]$tempDir\OnPremXUpdate_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 Start-Transcript -Path [[BT]]$logPath -Force
 
 Write-Output "Update started at $(Get-Date)"
 Write-Output "Target: $originalExePath"
 
 # 1. Stop Services/Processes
-Write-Output "Stopping Nexus Agent..."
-[[BT]]$serviceName = "NexusAgent"
+Write-Output "Stopping OnPremX Agent..."
+[[BT]]$serviceName = "OnPremXAgent"
 [[BT]]$svc = Get-Service -Name [[BT]]$serviceName -ErrorAction SilentlyContinue
 
 if ([[BT]]$svc -and [[BT]]$svc.Status -eq 'Running') {
@@ -745,7 +745,7 @@ if ([[BT]]$svc -and [[BT]]$svc.Status -eq 'Running') {
 }
 
 # Kill any remaining processes
-Get-Process -Name "Nexus-Agent" -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name "OnPremX-Agent" -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 
 # 2. Swap Binaries (Rename + Move)
@@ -773,7 +773,7 @@ while (-not [[BT]]$replaced -and [[BT]]$retryCount -lt [[BT]]$maxRetries) {
         [[BT]]$retryCount++
         
         # Try killing again
-        Get-Process -Name "Nexus-Agent" -ErrorAction SilentlyContinue | Stop-Process -Force
+        Get-Process -Name "OnPremX-Agent" -ErrorAction SilentlyContinue | Stop-Process -Force
         if ([[BT]]$svc) { Stop-Service -Name [[BT]]$serviceName -Force -ErrorAction SilentlyContinue }
     }
 }
@@ -790,7 +790,7 @@ if ([[BT]]$svc) {
     Write-Output "Service started."
 } else {
     Write-Output "Service not found. Installing Service..."
-    New-Service -Name [[BT]]$serviceName -BinaryPathName "$originalExePath" -DisplayName "Nexus Agent" -StartupType Automatic -ErrorAction SilentlyContinue
+    New-Service -Name [[BT]]$serviceName -BinaryPathName "$originalExePath" -DisplayName "OnPremX Agent" -StartupType Automatic -ErrorAction SilentlyContinue
     Start-Service -Name [[BT]]$serviceName -ErrorAction SilentlyContinue
     
     # Fallback to process if service fails
@@ -1030,7 +1030,7 @@ Stop-Transcript;
 		c.FileFromFS("index.html", httpFS)
 	})
 
-	fmt.Println("🚀 Nexus Admin Server running on :8080")
+	fmt.Println("🚀 OnPremX Admin Server running on :8080")
 	fmt.Println("🌐 Open Dashboard at: http://localhost:8080/")
 
 	if err := r.Run(":8080"); err != nil {

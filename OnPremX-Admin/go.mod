@@ -1,4 +1,4 @@
-module nexus-admin
+module onpremx-admin
 
 go 1.25.6
 
