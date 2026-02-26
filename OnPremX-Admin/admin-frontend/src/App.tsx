@@ -228,21 +228,21 @@ function App() {
               </span>
 
               <a 
-                href="/dl/OnPremX-Agent.exe" 
+                href="/dl/install_agent.bat" 
                 download
                 className="flex items-center gap-2 px-4 py-2 bg-emerald-600/10 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-emerald-600 hover:text-white dark:hover:bg-emerald-600 dark:hover:text-white transition-all shadow-sm"
               >
                 <Monitor size={14} />
-                Download Agent (.exe)
+                Standalone Setup (.bat)
               </a>
 
               <a 
-                href="/dl/install_agent.bat" 
+                href="/dl/OnPremX-Agent.exe" 
                 download
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600/10 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/20 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-indigo-600 hover:text-white dark:hover:bg-indigo-600 dark:hover:text-white transition-all shadow-sm"
+                className="flex items-center gap-2 px-4 py-2 bg-slate-600/10 dark:bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-500/20 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-slate-600 hover:text-white dark:hover:bg-slate-600 dark:hover:text-white transition-all shadow-sm"
               >
                 <Download size={14} />
-                One-Click Setup (.bat)
+                Agent Only (.exe)
               </a>
 
               <button 
