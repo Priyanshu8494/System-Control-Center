@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/smtp"
 	"strings"
 	"sync"
 	"time"
@@ -108,6 +109,15 @@ type ScheduledTask struct {
 	NextRun     time.Time `json:"next_run"`
 }
 
+// Alert structure for system-wide notifications
+type Alert struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	AgentID   string    `json:"agent_id"`
+	Type      string    `json:"type"` // e.g., "USB_PLUG"
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // AgentData structure matches the JSON sent by the Agent
 type AgentData struct {
 	Hostname        string    `gorm:"primaryKey" json:"hostname"`
@@ -164,6 +174,42 @@ var (
 	lastAdminActivity = time.Now()
 )
 
+// SystemSetting model for global settings
+type SystemSetting struct {
+	ID    uint   `gorm:"primaryKey" json:"id"`
+	Key   string `gorm:"uniqueIndex" json:"key"` // e.g., "alert_email"
+	Value string `json:"value"`
+}
+
+// sendEmailAlert sends an email when a USB event occurs
+func sendEmailAlert(recipient, hostname, deviceName string) {
+	if recipient == "" {
+		return
+	}
+
+	// Basic SMTP Configuration (Should be moved to settings in a real app)
+	from := "onpremx.alerts@gmail.com" // Placeholder
+	password := "your-app-password"    // Placeholder
+	smtpHost := "smtp.gmail.com"
+	smtpPort := "587"
+
+	// Message
+	subject := fmt.Sprintf("USB Alert: New device on %s", hostname)
+	body := fmt.Sprintf("A new USB device was plugged into %s:\n\nDevice: %s\nTime: %s", hostname, deviceName, time.Now().Format(time.RFC822))
+	message := []byte("Subject: " + subject + "\r\n\r\n" + body)
+
+	// Auth
+	auth := smtp.PlainAuth("", from, password, smtpHost)
+
+	// Send
+	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{recipient}, message)
+	if err != nil {
+		fmt.Printf("❌ Failed to send email alert: %v\n", err)
+	} else {
+		fmt.Printf("📧 Email alert sent to %s for %s\n", recipient, hostname)
+	}
+}
+
 func main() {
 	var err error
 	db, err = gorm.Open(sqlite.Open("onpremx.db"), &gorm.Config{})
@@ -172,7 +218,7 @@ func main() {
 	}
 
 	// Migrate the schema
-	db.AutoMigrate(&AgentData{}, &Command{}, &ScheduledTask{})
+	db.AutoMigrate(&AgentData{}, &Command{}, &ScheduledTask{}, &SystemSetting{}, &Alert{})
 
 	// Start Scheduler
 	go schedulerLoop()
@@ -248,84 +294,124 @@ func main() {
 
 			agent.LastSeen = time.Now()
 
-			// DB Logic
+			// DB Logic - Get existing data to merge
 			var existing AgentData
-			result := db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)}).First(&existing, "hostname = ?", agent.Hostname)
+			err := db.First(&existing, "hostname = ?", agent.Hostname).Error
 
-			if result.Error == nil {
-				// Merge logic
-				if agent.CPUUsage == 0 && agent.TotalRAM == 0 {
-					// Restore stats from DB if idle
-					agent.CPUModel = existing.CPUModel
-					agent.CPUUsage = existing.CPUUsage
-					agent.TotalRAM = existing.TotalRAM
-					agent.UsedRAM = existing.UsedRAM
-					agent.RAMUsage = existing.RAMUsage
-					agent.TotalDisk = existing.TotalDisk
-					agent.UsedDisk = existing.UsedDisk
-					agent.DiskUsage = existing.DiskUsage
-					agent.OS = existing.OS
-					agent.Arch = existing.Arch
-					agent.Platform = existing.Platform
-					agent.PlatformVersion = existing.PlatformVersion
-					// Preserve Network info
-					if agent.IPAddress == "" {
-						agent.IPAddress = existing.IPAddress
+			if err == nil {
+				// Detect USB Plug-in and Removal Events
+				var alertEmail SystemSetting
+				emailFound := db.Where("key = ?", "alert_email").First(&alertEmail).Error == nil && alertEmail.Value != ""
+
+				// 1. Detect New Devices (Plugged In)
+				for _, currentDev := range agent.Security.USBDevices {
+					isNew := true
+					for _, oldDev := range existing.Security.USBDevices {
+						if currentDev == oldDev {
+							isNew = false
+							break
+						}
 					}
-					if agent.MACAddress == "" {
-						agent.MACAddress = existing.MACAddress
+					if isNew {
+						fmt.Printf("🚨 NEW USB DETECTED on %s: %s\n", agent.Hostname, currentDev)
+						db.Create(&Alert{
+							AgentID:   agent.Hostname,
+							Type:      "USB_PLUG",
+							Message:   fmt.Sprintf("New USB device: %s", currentDev),
+							CreatedAt: time.Now(),
+						})
+						if emailFound {
+							go sendEmailAlert(alertEmail.Value, agent.Hostname, "PLUGGED: "+currentDev)
+						}
 					}
 				}
 
-				if len(agent.Software) == 0 {
+				// 2. Detect Missing Devices (Removed)
+				for _, oldDev := range existing.Security.USBDevices {
+					isRemoved := true
+					for _, currentDev := range agent.Security.USBDevices {
+						if oldDev == currentDev {
+							isRemoved = false
+							break
+						}
+					}
+					if isRemoved {
+						fmt.Printf("ℹ️ USB REMOVED on %s: %s\n", agent.Hostname, oldDev)
+						db.Create(&Alert{
+							AgentID:   agent.Hostname,
+							Type:      "USB_REMOVE",
+							Message:   fmt.Sprintf("USB device removed: %s", oldDev),
+							CreatedAt: time.Now(),
+						})
+						if emailFound {
+							go sendEmailAlert(alertEmail.Value, agent.Hostname, "REMOVED: "+oldDev)
+						}
+					}
+				}
+
+				// 1. Merge Inventory (Only if agent sent empty arrays)
+				if len(agent.Software) == 0 && len(existing.Software) > 0 {
 					agent.Software = existing.Software
 				}
-				if len(agent.Services) == 0 {
+				if len(agent.Services) == 0 && len(existing.Services) > 0 {
 					agent.Services = existing.Services
 				}
-				if len(agent.Patches) == 0 {
+				if len(agent.Patches) == 0 && len(existing.Patches) > 0 {
 					agent.Patches = existing.Patches
 				}
-				if len(agent.EventLogs) == 0 {
+				if len(agent.EventLogs) == 0 && len(existing.EventLogs) > 0 {
 					agent.EventLogs = existing.EventLogs
 				}
 
-				// Preserve Tags and Group (Metadata)
+				// 2. Preserve Metadata/Failsafes
 				if len(agent.Tags) == 0 {
 					agent.Tags = existing.Tags
 				}
 				if agent.Group == "" {
 					agent.Group = existing.Group
 				}
+				if agent.OS == "" {
+					agent.OS = existing.OS
+				}
+				if agent.Platform == "" {
+					agent.Platform = existing.Platform
+				}
+				if agent.IPAddress == "" {
+					agent.IPAddress = existing.IPAddress
+				}
+				if agent.MACAddress == "" {
+					agent.MACAddress = existing.MACAddress
+				}
+				if agent.CPUModel == "" {
+					agent.CPUModel = existing.CPUModel
+				}
 			}
 
-			db.Save(&agent)
+			// Save the merged data
+			if err := db.Save(&agent).Error; err != nil {
+				fmt.Printf("❌ Failed to save agent data: %v\n", err)
+			}
 
 			// Check for pending commands
 			var nextCmd *Command
 			var cmd Command
-			// Find oldest pending command
 			if result := db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)}).Model(&Command{}).Where("agent_id = ? AND status = ?", agent.Hostname, "pending").Order("created_at asc").First(&cmd); result.Error == nil {
-				// Mark as sent
 				cmd.Status = "sent"
 				db.Save(&cmd)
 				nextCmd = &cmd
 			}
 
 			storeMutex.Lock()
-			// Check if Admin is Active (last 15 seconds)
 			adminActive := time.Since(lastAdminActivity) < 15*time.Second
-
-			// Check if Streaming is Active for this agent
 			streamScreen := streamActive[agent.Hostname]
 			storeMutex.Unlock()
 
-			fmt.Printf("💓 Heartbeat received from: %s\n", agent.Hostname)
+			fmt.Printf("💓 Heartbeat from: %s (IP: %s, SW: %d, SVC: %d, PT: %d)\n", agent.Hostname, agent.IPAddress, len(agent.Software), len(agent.Services), len(agent.Patches))
 
 			c.JSON(http.StatusOK, gin.H{
 				"status":        "ok",
 				"command":       nextCmd,
-				"admin_active":  adminActive, // Tell agent if it should work hard or sleep
+				"admin_active":  adminActive,
 				"stream_screen": streamScreen,
 			})
 		})
@@ -595,236 +681,83 @@ func main() {
 					return
 				}
 
-				// Construct Download URL (Use the hardcoded server IP to avoid localhost issues on remote agents)
-				// Find local IP if request is from localhost
+				// If hostnames is empty or ["all"], select all known agents
+				hostnames := req.Hostnames
+				if len(hostnames) == 0 || (len(hostnames) == 1 && hostnames[0] == "all") {
+					var allAgents []AgentData
+					db.Select("hostname").Find(&allAgents)
+					hostnames = []string{}
+					for _, a := range allAgents {
+						hostnames = append(hostnames, a.Hostname)
+					}
+				}
+
+				// Construct Download URL dynamically based on how admin is accessed
 				serverHost := c.Request.Host
-				if strings.HasPrefix(serverHost, "localhost") || strings.HasPrefix(serverHost, "127.0.0.1") {
+				// Use the IP that the agent is actually using to reach the server
+				// c.Request.Host might be an IP, but if it's "localhost:8080", we need the LAN IP.
+				if strings.HasPrefix(serverHost, "localhost") || strings.HasPrefix(serverHost, "127.0.0.1") || strings.HasPrefix(serverHost, "[::1]") || strings.HasPrefix(serverHost, "169.254") {
 					addrs, err := net.InterfaceAddrs()
 					if err == nil {
 						for _, addr := range addrs {
 							if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 								if ipnet.IP.To4() != nil {
-									serverHost = fmt.Sprintf("%s:8080", ipnet.IP.String())
-									break
+									ipStr := ipnet.IP.String()
+									if !strings.HasPrefix(ipStr, "169.254") { // Avoid APIPA
+										serverHost = fmt.Sprintf("%s:8080", ipStr)
+										break
+									}
 								}
 							}
 						}
 					}
 				}
 
-				// PowerShell Update Command (Service-Aware & Path-Agnostic)
-				downloadURL := "http://192.168.1.4:8080/dl/OnPremX-Agent.exe"
+				downloadURL := fmt.Sprintf("http://%s/dl/OnPremX-Agent.exe", serverHost)
 
-				// Note: We use [[BT]] as a placeholder for backtick (`) because we can't use backticks inside a Go raw string literal.
-				updateCmdTemplate := `
+				// Robust PowerShell update script for OLD agents (v0.0.14 and below)
+				// This script will be sent as an "exec" command.
+				updateScriptTemplate := `
 $url = "%s";
-$tempDir = [System.IO.Path]::GetTempPath();
-$dest = Join-Path $tempDir "OnPremX-Agent.new.exe";
-$script = Join-Path $tempDir "update_agent.ps1";
-$log = Join-Path $tempDir "update_log.txt";
+$dest = "$env:TEMP\OnPremX-Agent.new.exe";
+$proc = Get-Process OnPremX-Agent -ErrorAction SilentlyContinue | Select-Object -First 1;
+$oldPath = if ($proc) { $proc.Path } else { "C:\OnPremX-Agent.exe" };
 
-// Clean up previous runs
-if (Test-Path $dest) { Remove-Item $dest -Force }
-if (Test-Path $script) { Remove-Item $script -Force }
-
-Start-Transcript -Path $log -Force;
 try {
-    // Check for Admin privileges
-    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Write-Warning "Not running as Administrator. Attempting to elevate..."
-        
-        $elevationScript = @"
-Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command & {
-    [[BT]]$url = '$url'
-    [[BT]]$tempDir = [System.IO.Path]::GetTempPath()
-    [[BT]]$dest = Join-Path [[BT]]$tempDir 'OnPremX-Agent.new.exe'
-    [[BT]]$script = Join-Path [[BT]]$tempDir 'update_agent_elevated.ps1'
-    
-    # Download again in elevated context to be safe or just pass path? Better pass path.
-    # Actually, let's just re-download inside the elevated block to avoid passing complex args.
-    Invoke-WebRequest -Uri [[BT]]$url -OutFile [[BT]]$dest -ErrorAction Stop
-
-    # Stop Service
-    Stop-Service -Name 'OnPremXAgent' -Force -ErrorAction SilentlyContinue
-    Get-Process -Name 'OnPremX-Agent' -ErrorAction SilentlyContinue | Stop-Process -Force
-
-    # Find Original Path (We need to find it again or pass it)
-    [[BT]]$originalExePath = '$((Get-Process -Name "OnPremX-Agent" -ErrorAction SilentlyContinue).Path)'
-    if (-not [[BT]]$originalExePath) {
-        [[BT]]$svc = Get-WmiObject win32_service | Where-Object { [[BT]]$_.Name -eq 'OnPremXAgent' }
-        if ([[BT]]$svc) {
-             [[BT]]$path = [[BT]]$svc.PathName -replace '"',''
-             if ([[BT]]$path -match '^(.*\.exe)') { [[BT]]$path = [[BT]]$matches[1] }
-             [[BT]]$originalExePath = [[BT]]$path
-        }
-    }
-    
-    if (-not [[BT]]$originalExePath) {
-         # Fallback default
-         [[BT]]$originalExePath = 'C:\Program Files\OnPremX Agent\OnPremX-Agent.exe'
-    }
-
-    # Replace
-    Move-Item -Path [[BT]]$dest -Destination [[BT]]$originalExePath -Force
-    
-    # Restart
-    Start-Service -Name 'OnPremXAgent' -ErrorAction SilentlyContinue
-    Start-Process [[BT]]$originalExePath -WindowStyle Hidden
-}"
-"@
-        Invoke-Expression $elevationScript
-        exit
-    }
-
-    // Get Current Agent Location
-    $originalExePath = $null
-    
-    # 1. Try to find running process
-    $proc = Get-Process -Name "OnPremX-Agent" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($proc) {
-        $originalExePath = $proc.Path
-    }
-    
-    # 2. If process not found (e.g. stopped service), try Service Config
-    if (-not $originalExePath) {
-        $serviceName = "OnPremXAgent"
-        $svc = Get-WmiObject win32_service | Where-Object { $_.Name -eq $serviceName }
-        if ($svc) {
-             $path = $svc.PathName -replace '"',''
-             if ($path -match '^(.*\.exe)') { $path = $matches[1] }
-             $originalExePath = $path
-        }
-    }
-    
-    # 3. Fallback: Check standard install location (Program Files)
-    if (-not $originalExePath) {
-        $progFiles = "C:\Program Files\OnPremX Agent\OnPremX-Agent.exe"
-        if (Test-Path $progFiles) {
-            $originalExePath = $progFiles
-        }
-    }
-    
-    # Safety Check: Do NOT overwrite PowerShell
-    if ($originalExePath -like "*powershell.exe") {
-        Throw "Error: Detected path is PowerShell, not OnPremX-Agent."
-    }
-    
-    if (-not $originalExePath) {
-        Throw "Could not find OnPremX-Agent executable path. Is the agent installed/running?"
-    }
-    
-    Write-Output "Target Agent Path: $originalExePath";
-    
-    Write-Output "Downloading update from $url to $dest...";
-    Invoke-WebRequest -Uri $url -OutFile $dest -ErrorAction Stop;
-    
-    # Check if download was successful
-    if ((Get-Item $dest).Length -lt 1000) {
-        Throw "Downloaded file is too small. Update failed."
-    }
-
-    $updateScript = @"
-[[BT]]$ErrorActionPreference = 'Stop'
-[[BT]]$tempDir = [System.IO.Path]::GetTempPath()
-[[BT]]$logPath = "[[BT]]$tempDir\OnPremXUpdate_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-Start-Transcript -Path [[BT]]$logPath -Force
-
-Write-Output "Update started at $(Get-Date)"
-Write-Output "Target: $originalExePath"
-
-# 1. Stop Services/Processes
-Write-Output "Stopping OnPremX Agent..."
-[[BT]]$serviceName = "OnPremXAgent"
-[[BT]]$svc = Get-Service -Name [[BT]]$serviceName -ErrorAction SilentlyContinue
-
-if ([[BT]]$svc -and [[BT]]$svc.Status -eq 'Running') {
-    Write-Output "Stopping Service..."
-    Stop-Service -Name [[BT]]$serviceName -Force
-    Start-Sleep -Seconds 5
-}
-
-# Kill any remaining processes
-Get-Process -Name "OnPremX-Agent" -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 2
-
-# 2. Swap Binaries (Rename + Move)
-[[BT]]$backupPath = "$originalExePath.bak"
-if (Test-Path [[BT]]$backupPath) { Remove-Item [[BT]]$backupPath -Force }
-
-[[BT]]$maxRetries = 10
-[[BT]]$retryCount = 0
-[[BT]]$replaced = [[BT]]$false
-
-while (-not [[BT]]$replaced -and [[BT]]$retryCount -lt [[BT]]$maxRetries) {
-    try {
-        if (Test-Path "$originalExePath") {
-             Write-Output "Renaming current binary to .bak..."
-             Rename-Item -Path "$originalExePath" -NewName "$originalExePath.bak" -Force
-        }
-        
-        Write-Output "Moving new binary into place..."
-        Move-Item -Path "$dest" -Destination "$originalExePath" -Force
-        [[BT]]$replaced = [[BT]]$true
-    } catch {
-        Write-Output "File locked, retrying in 3 seconds... ([[BT]]$retryCount/[[BT]]$maxRetries)"
-        Write-Output "Error: [[BT]]$_"
-        Start-Sleep -Seconds 3
-        [[BT]]$retryCount++
-        
-        # Try killing again
-        Get-Process -Name "OnPremX-Agent" -ErrorAction SilentlyContinue | Stop-Process -Force
-        if ([[BT]]$svc) { Stop-Service -Name [[BT]]$serviceName -Force -ErrorAction SilentlyContinue }
-    }
-}
-
-if (-not [[BT]]$replaced) {
-    Write-Error "Failed to replace binary after multiple attempts."
-    exit 1
-}
-
-# 3. Restart Service/Process
-Write-Output "Restarting Agent..."
-if ([[BT]]$svc) {
-    Start-Service -Name [[BT]]$serviceName
-    Write-Output "Service started."
-} else {
-    Write-Output "Service not found. Installing Service..."
-    New-Service -Name [[BT]]$serviceName -BinaryPathName "$originalExePath" -DisplayName "OnPremX Agent" -StartupType Automatic -ErrorAction SilentlyContinue
-    Start-Service -Name [[BT]]$serviceName -ErrorAction SilentlyContinue
-    
-    # Fallback to process if service fails
-    if (-not (Get-Service -Name [[BT]]$serviceName -ErrorAction SilentlyContinue | Where-Object { [[BT]]$_.Status -eq 'Running' })) {
-         Write-Output "Service install failed. Starting as process..."
-         Start-Process "$originalExePath" -WindowStyle Hidden
-    }
-}
-
-Write-Output "Update Complete."
-Stop-Transcript
-"@
-    Set-Content -Path $script -Value $updateScript
-    Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File ""$script""" -WindowStyle Hidden
+    (New-Object System.Net.WebClient).DownloadFile($url, $dest);
+    $batch = "@echo off` + "\r\n" + `
+timeout /t 5 /nobreak > nul
+sc stop OnPremXAgent > nul 2>&1
+taskkill /F /IM OnPremX-Agent.exe /T > nul 2>&1
+timeout /t 2 /nobreak > nul
+copy /y ""$dest"" ""$oldPath"" > nul 2>&1
+sc start OnPremXAgent > nul 2>&1
+del ""$dest"" > nul 2>&1
+del ""%%~f0""
+";
+    $batchPath = "$env:TEMP\upd_agent.bat";
+    $batch | Out-File -FilePath $batchPath -Encoding ascii;
+    Start-Process "cmd.exe" -ArgumentList "/c $batchPath" -WindowStyle Hidden;
+    "Update triggered successfully"
 } catch {
-    Write-Error "Failed to download update: $_";
-}
-Stop-Transcript;
-`
-				updateCmd := fmt.Sprintf(strings.ReplaceAll(updateCmdTemplate, "[[BT]]", "`"), downloadURL)
+    "Update failed: $_"
+}`
 
-				for _, hostname := range req.Hostnames {
+				for _, hostname := range hostnames {
+					// We send it as "exec" so OLD agents can process it
+					finalScript := strings.Replace(updateScriptTemplate, "%s", downloadURL, 1)
 					cmd := Command{
-						ID:        fmt.Sprintf("update-%s-%d", hostname, time.Now().UnixNano()),
+						ID:        fmt.Sprintf("update-%d", time.Now().UnixNano()),
 						AgentID:   hostname,
 						Type:      "exec",
-						Command:   updateCmd,
+						Command:   finalScript,
 						Status:    "pending",
 						CreatedAt: time.Now(),
 					}
 					db.Create(&cmd)
 				}
 
-				c.JSON(http.StatusOK, gin.H{"status": "queued", "count": len(req.Hostnames)})
+				c.JSON(http.StatusOK, gin.H{"status": "queued", "count": len(hostnames)})
 			})
 
 			// --- Scheduled Tasks Endpoints ---
@@ -990,6 +923,44 @@ Stop-Transcript;
 				storeMutex.RLock()
 				defer storeMutex.RUnlock()
 				c.JSON(http.StatusOK, scriptLibrary)
+			})
+
+			// --- Alerts ---
+			protected.GET("/alerts", func(c *gin.Context) {
+				var alerts []Alert
+				db.Order("created_at desc").Limit(50).Find(&alerts)
+				c.JSON(http.StatusOK, alerts)
+			})
+
+			// --- Global Settings ---
+
+			// Get Settings
+			protected.GET("/settings", func(c *gin.Context) {
+				var settings []SystemSetting
+				db.Find(&settings)
+				c.JSON(http.StatusOK, settings)
+			})
+
+			// Save Settings
+			protected.POST("/settings", func(c *gin.Context) {
+				var req struct {
+					Key   string `json:"key"`
+					Value string `json:"value"`
+				}
+				if err := c.ShouldBindJSON(&req); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+					return
+				}
+
+				var setting SystemSetting
+				if err := db.Where("key = ?", req.Key).First(&setting).Error; err == nil {
+					setting.Value = req.Value
+					db.Save(&setting)
+				} else {
+					setting = SystemSetting{Key: req.Key, Value: req.Value}
+					db.Create(&setting)
+				}
+				c.JSON(http.StatusOK, setting)
 			})
 		}
 	}

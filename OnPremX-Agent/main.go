@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -24,15 +26,40 @@ import (
 	"golang.org/x/sys/windows/svc"
 )
 
-// Agent configuration
-const (
-	AgentVersion  = "0.0.14"
+// Agent configuration defaults
+var (
+	AgentVersion  = "0.0.18"
 	ServiceName   = "OnPremXAgent"
-	ServerURL     = "http://192.168.1.4:8080/api/heartbeat"
-	ResultURL     = "http://192.168.1.4:8080/api/command/result"
-	ScreenshotURL = "http://192.168.1.4:8080/api/agent/screenshot"
+	BaseServerURL = "http://192.168.1.4:8080"
 	CheckInterval = 10 * time.Second
 )
+
+// Dynamic URLs (updated from config)
+var (
+	ServerURL     string
+	ResultURL     string
+	ScreenshotURL string
+)
+
+func init() {
+	// Try to load config.json
+	exePath, _ := os.Executable()
+	configPath := strings.Replace(exePath, ".exe", ".config.json", 1)
+
+	if data, err := os.ReadFile(configPath); err == nil {
+		var config struct {
+			ServerURL string `json:"server_url"`
+		}
+		if err := json.Unmarshal(data, &config); err == nil && config.ServerURL != "" {
+			BaseServerURL = config.ServerURL
+		}
+	}
+
+	// Update URLs
+	ServerURL = BaseServerURL + "/api/heartbeat"
+	ResultURL = BaseServerURL + "/api/command/result"
+	ScreenshotURL = BaseServerURL + "/api/agent/screenshot"
+}
 
 type myService struct{}
 
@@ -61,7 +88,6 @@ loop:
 
 func runAgent() {
 	// Setup Logging to file
-	// Use absolute path for log file when running as service
 	exePath, _ := os.Executable()
 	logPath := strings.Replace(exePath, ".exe", ".log", 1)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -71,16 +97,12 @@ func runAgent() {
 
 	log.Printf("Starting OnPremX Agent v%s (Service Mode)...\n", AgentVersion)
 
-	// Check if running as Admin
-	isAdmin := "No"
-	if _, err := os.Open("\\\\.\\PHYSICALDRIVE0"); err == nil {
-		isAdmin = "Yes"
-	}
-	log.Printf("Running as Admin/SYSTEM: %s\n", isAdmin)
+	// Initial Inventory Collection (Run once at startup)
+	log.Println("Performing initial inventory collection...")
+	updateInventory()
+	lastInventory = time.Now()
 
 	for {
-		var sysInfo SystemInfo
-
 		stateMutex.RLock()
 		localStream := streamScreen
 		localAdmin := adminActive
@@ -91,32 +113,30 @@ func runAgent() {
 			go captureAndSendScreen()
 		}
 
-		// Always run inventory logic (Service has admin rights by default)
-		// We can assume AdminActive is implicitly true if we want, but let's stick to server command
-		// However, for collecting data, we should try.
-		// Since we run as SYSTEM, we have full access.
+		// Always collect basic system info (CPU, RAM, Disk, etc.)
+		sysInfo := getSystemInfo()
 
-		// If server says "AdminActive", we do full inventory
-		if localAdmin {
-			sysInfo = getSystemInfo()
+		// Always include cached inventory data if available (Protected by mutex)
+		inventoryMutex.RLock()
+		sysInfo.Software = cachedSoftware
+		sysInfo.Services = cachedServices
+		sysInfo.Patches = cachedPatches
+		inventoryMutex.RUnlock()
+
+		// If server says "AdminActive" or 5 minutes passed, refresh inventory/logs
+		if localAdmin || time.Since(lastInventory) > 5*time.Minute {
 			if time.Since(lastInventory) > 5*time.Minute {
-				updateInventory()
-				sysInfo.Software = cachedSoftware
-				sysInfo.Services = cachedServices
-				sysInfo.Patches = cachedPatches
+				log.Println("Refreshing inventory in background...")
+				go updateInventory()
 				lastInventory = time.Now()
 			}
-			sysInfo.EventLogs = getEventLogs()
-		} else {
-			// Basic Info
-			sysInfo = SystemInfo{
-				Hostname: cachedHostname(),
-				Platform: "idle",
+			// Get fresh logs if admin is active
+			if localAdmin {
+				sysInfo.EventLogs = getEventLogs()
 			}
 		}
 
 		// Always send security info (USB/RDP status)
-		// Service runs as SYSTEM, so it can read HKLM
 		sysInfo.Security = getSecurityInfo()
 
 		go sendHeartbeat(sysInfo)
@@ -125,8 +145,10 @@ func runAgent() {
 		interval := CheckInterval
 		if localStream {
 			interval = 500 * time.Millisecond // Fast poll for streaming
-		} else if !localAdmin {
-			interval = 5 * time.Second
+		} else if localAdmin {
+			interval = 2 * time.Second // Faster poll when admin is watching
+		} else {
+			interval = 10 * time.Second // Normal poll
 		}
 
 		time.Sleep(interval)
@@ -212,6 +234,7 @@ var (
 	cachedServices []Service
 	cachedPatches  []Patch
 	lastInventory  time.Time
+	inventoryMutex sync.RWMutex // Mutex for inventory data
 
 	runningCmds = make(map[string]*exec.Cmd) // Command ID -> Running Process
 	cmdMutex    sync.Mutex
@@ -245,20 +268,29 @@ func getSystemInfo() SystemInfo {
 	// Disk Info (C: drive for Windows)
 	diskStat, _ := disk.Usage("C:")
 
-	// Network Info
-	ip := ""
-	mac := ""
-	interfaces, _ := net.Interfaces()
-	for _, iface := range interfaces {
-		if len(iface.HardwareAddr) > 0 {
-			mac = iface.HardwareAddr.String()
-			addrs, _ := iface.Addrs()
-			for _, addr := range addrs {
-				ip = addr.String()
-				break
+	// Network Info (Get IPv4)
+	ip := "127.0.0.1"
+	mac := "00:00:00:00:00:00"
+	addrs, err := net.InterfaceAddrs()
+	if err == nil {
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					ip = ipnet.IP.String()
+					break
+				}
 			}
-			if ip != "" {
-				break
+		}
+	}
+
+	// Get MAC for primary interface
+	if interfaces, err := net.Interfaces(); err == nil {
+		for _, iface := range interfaces {
+			if iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagLoopback == 0 {
+				if len(iface.HardwareAddr) > 0 {
+					mac = iface.HardwareAddr.String()
+					break
+				}
 			}
 		}
 	}
@@ -317,8 +349,8 @@ func getSecurityInfo() SecurityInfo {
 		info.RDPBlocked = true
 	}
 
-	// Get Connected USB Devices
-	cmdDevices := exec.Command("powershell", "-NoProfile", "-Command", `Get-WmiObject Win32_DiskDrive | Where-Object { $_.InterfaceType -eq 'USB' } | Select-Object -ExpandProperty Caption`)
+	// Get Connected USB Devices (Disks and Flash Drives)
+	cmdDevices := exec.Command("powershell", "-NoProfile", "-Command", `Get-PnpDevice -PresentOnly | Where-Object { $_.Class -eq 'DiskDrive' -and $_.InstanceId -match 'USBSTOR' } | Select-Object -ExpandProperty FriendlyName`)
 	cmdDevices.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	outDevices, _ := cmdDevices.Output()
 	lines := strings.Split(string(outDevices), "\n")
@@ -351,125 +383,162 @@ func getSecurityInfo() SecurityInfo {
 }
 
 func updateInventory() {
-	// 1. Get Installed Software (PowerShell) - Scan 32-bit, 64-bit and User keys
+	// 1. Get Installed Software
 	psScript := `
 	$paths = @(
 		"HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
 		"HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
 		"HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
 	);
-	Get-ItemProperty $paths -ErrorAction SilentlyContinue | 
+	$sw = Get-ItemProperty $paths -ErrorAction SilentlyContinue | 
 	Select-Object DisplayName, DisplayVersion, Publisher, UninstallString | 
 	Where-Object { $_.DisplayName -ne $null } | 
-	Sort-Object DisplayName -Unique | 
-	ConvertTo-Json`
+	Sort-Object DisplayName -Unique
+	if ($sw) { $sw | ConvertTo-Json -Depth 2 } else { "[]" }`
 
 	cmd1 := exec.Command("powershell", "-NoProfile", "-Command", psScript)
 	cmd1.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd1.Output()
-	if err == nil {
+	out, err := cmd1.CombinedOutput()
+	if err == nil && len(out) > 0 {
+		var softList []Software
 		var raw []struct {
-			DisplayName     string `json:"DisplayName"`
-			DisplayVersion  string `json:"DisplayVersion"`
-			Publisher       string `json:"Publisher"`
-			UninstallString string `json:"UninstallString"`
+			DisplayName     string      `json:"DisplayName"`
+			DisplayVersion  interface{} `json:"DisplayVersion"`
+			Publisher       string      `json:"Publisher"`
+			UninstallString string      `json:"UninstallString"`
 		}
-
-		// Handle single object vs array JSON output from PowerShell
-		if len(out) > 0 {
-			if err := json.Unmarshal(out, &raw); err != nil {
-				// Try single object
-				var singleItem struct {
-					DisplayName     string `json:"DisplayName"`
-					DisplayVersion  string `json:"DisplayVersion"`
-					Publisher       string `json:"Publisher"`
-					UninstallString string `json:"UninstallString"`
-				}
-				if err := json.Unmarshal(out, &singleItem); err == nil {
-					raw = append(raw, singleItem)
-				}
-			}
-
-			var softList []Software
+		if err := json.Unmarshal(out, &raw); err == nil {
 			for _, item := range raw {
-				if item.DisplayName != "" {
-					softList = append(softList, Software{
-						Name:            item.DisplayName,
-						Version:         item.DisplayVersion,
-						Vendor:          item.Publisher,
-						UninstallString: item.UninstallString,
-					})
+				version := ""
+				if item.DisplayVersion != nil {
+					version = fmt.Sprintf("%v", item.DisplayVersion)
 				}
+				softList = append(softList, Software{
+					Name:            item.DisplayName,
+					Version:         version,
+					Vendor:          item.Publisher,
+					UninstallString: item.UninstallString,
+				})
 			}
-			cachedSoftware = softList
+		} else {
+			var singleItem struct {
+				DisplayName     string      `json:"DisplayName"`
+				DisplayVersion  interface{} `json:"DisplayVersion"`
+				Publisher       string      `json:"Publisher"`
+				UninstallString string      `json:"UninstallString"`
+			}
+			if err := json.Unmarshal(out, &singleItem); err == nil {
+				version := ""
+				if singleItem.DisplayVersion != nil {
+					version = fmt.Sprintf("%v", singleItem.DisplayVersion)
+				}
+				softList = append(softList, Software{
+					Name:            singleItem.DisplayName,
+					Version:         version,
+					Vendor:          singleItem.Publisher,
+					UninstallString: singleItem.UninstallString,
+				})
+			}
 		}
+		if len(softList) > 0 {
+			inventoryMutex.Lock()
+			cachedSoftware = softList
+			inventoryMutex.Unlock()
+			log.Printf("✅ Collected %d software items\n", len(softList))
+		}
+	} else if err != nil {
+		log.Printf("❌ Software collection error: %v (Out: %s)\n", err, string(out))
 	}
 
 	// 2. Get Services
 	psScriptServices := `Get-Service | Select-Object Name, Status | ConvertTo-Json`
 	cmd2 := exec.Command("powershell", "-NoProfile", "-Command", psScriptServices)
 	cmd2.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	outSvc, errSvc := cmd2.Output()
-	if errSvc == nil {
+	outSvc, errSvc := cmd2.CombinedOutput()
+	if errSvc == nil && len(outSvc) > 0 {
+		var svcList []Service
 		var rawSvc []struct {
 			Name   string `json:"Name"`
-			Status int    `json:"Status"` // 1=Stopped, 4=Running
+			Status int    `json:"Status"`
 		}
-		json.Unmarshal(outSvc, &rawSvc)
-		var svcList []Service
-		for _, item := range rawSvc {
-			status := "Stopped"
-			if item.Status == 4 {
-				status = "Running"
+		if err := json.Unmarshal(outSvc, &rawSvc); err == nil {
+			for _, item := range rawSvc {
+				status := "Stopped"
+				if item.Status == 4 {
+					status = "Running"
+				}
+				svcList = append(svcList, Service{Name: item.Name, Status: status})
 			}
-			svcList = append(svcList, Service{
-				Name:   item.Name,
-				Status: status,
-			})
+		} else {
+			var single struct {
+				Name   string `json:"Name"`
+				Status int    `json:"Status"`
+			}
+			if err := json.Unmarshal(outSvc, &single); err == nil {
+				status := "Stopped"
+				if single.Status == 4 {
+					status = "Running"
+				}
+				svcList = append(svcList, Service{Name: single.Name, Status: status})
+			}
 		}
-		cachedServices = svcList
+		if len(svcList) > 0 {
+			inventoryMutex.Lock()
+			cachedServices = svcList
+			inventoryMutex.Unlock()
+			log.Printf("✅ Collected %d services\n", len(svcList))
+		}
 	}
 
 	// 3. Get HotFixes (Patches)
 	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Get-HotFix | Select-Object HotFixID,Description,InstalledBy,InstalledOn | ConvertTo-Json")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err = cmd.CombinedOutput()
-	if err == nil {
+	if err == nil && len(out) > 0 {
+		var patchList []Patch
 		var items []struct {
 			HotFixID    string      `json:"HotFixID"`
 			Description string      `json:"Description"`
 			InstalledBy string      `json:"InstalledBy"`
 			InstalledOn interface{} `json:"InstalledOn"`
 		}
-		// Try unmarshal as array
-		if err := json.Unmarshal(out, &items); err != nil {
-			// Try single object
-			var singleItem struct {
+		if err := json.Unmarshal(out, &items); err == nil {
+			for _, item := range items {
+				patchList = append(patchList, Patch{
+					HotFixID:    item.HotFixID,
+					Description: item.Description,
+					InstalledBy: item.InstalledBy,
+					InstalledOn: time.Now(),
+				})
+			}
+		} else {
+			var single struct {
 				HotFixID    string      `json:"HotFixID"`
 				Description string      `json:"Description"`
 				InstalledBy string      `json:"InstalledBy"`
 				InstalledOn interface{} `json:"InstalledOn"`
 			}
-			if err := json.Unmarshal(out, &singleItem); err == nil {
-				items = append(items, singleItem)
+			if err := json.Unmarshal(out, &single); err == nil {
+				patchList = append(patchList, Patch{
+					HotFixID:    single.HotFixID,
+					Description: single.Description,
+					InstalledBy: single.InstalledBy,
+					InstalledOn: time.Now(),
+				})
 			}
 		}
-
-		var patchList []Patch
-		for _, item := range items {
-			patchList = append(patchList, Patch{
-				HotFixID:    item.HotFixID,
-				Description: item.Description,
-				InstalledBy: item.InstalledBy,
-				InstalledOn: time.Now(), // Simplified date
-			})
+		if len(patchList) > 0 {
+			inventoryMutex.Lock()
+			cachedPatches = patchList
+			inventoryMutex.Unlock()
+			log.Printf("✅ Collected %d patches\n", len(patchList))
 		}
-		cachedPatches = patchList
 	}
 }
 
 func getEventLogs() []EventLog {
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Get-EventLog -LogName System -EntryType Error -Newest 5 | Select-Object TimeGenerated,EntryType,Source,Message,EventID | ConvertTo-Json")
+	psScript := `Get-WinEvent -FilterHashtable @{LogName='System'; Level=2} -MaxEvents 5 | Select-Object TimeCreated, ProviderName, Message, Id | ConvertTo-Json`
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", psScript)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -477,22 +546,20 @@ func getEventLogs() []EventLog {
 	}
 
 	var items []struct {
-		TimeGenerated string `json:"TimeGenerated"`
-		EntryType     int    `json:"EntryType"`
-		Source        string `json:"Source"`
-		Message       string `json:"Message"`
-		EventID       int64  `json:"EventID"`
+		TimeCreated  string `json:"TimeCreated"`
+		ProviderName string `json:"ProviderName"`
+		Message      string `json:"Message"`
+		Id           int64  `json:"Id"`
 	}
 
 	var logs []EventLog
 
 	if err := json.Unmarshal(out, &items); err != nil {
 		var singleItem struct {
-			TimeGenerated string `json:"TimeGenerated"`
-			EntryType     int    `json:"EntryType"`
-			Source        string `json:"Source"`
-			Message       string `json:"Message"`
-			EventID       int64  `json:"EventID"`
+			TimeCreated  string `json:"TimeCreated"`
+			ProviderName string `json:"ProviderName"`
+			Message      string `json:"Message"`
+			Id           int64  `json:"Id"`
 		}
 		if err := json.Unmarshal(out, &singleItem); err == nil {
 			items = append(items, singleItem)
@@ -501,11 +568,11 @@ func getEventLogs() []EventLog {
 
 	for _, item := range items {
 		logs = append(logs, EventLog{
-			TimeGenerated: time.Now(),
+			TimeGenerated: time.Now(), // Simplified
 			EntryType:     "Error",
-			Source:        item.Source,
+			Source:        item.ProviderName,
 			Message:       item.Message,
-			EventID:       item.EventID,
+			EventID:       item.Id,
 		})
 	}
 	return logs
@@ -544,6 +611,12 @@ func sendHeartbeat(info SystemInfo) {
 }
 
 func executeCommand(cmd Command) {
+	if cmd.Type == "update_agent" {
+		log.Printf("🚀 Received update command. Downloading from: %s\n", cmd.Command)
+		go handleSelfUpdate(cmd)
+		return
+	}
+
 	if cmd.Type == "cancel" {
 		cmdMutex.Lock()
 		targetID := cmd.Command
@@ -583,6 +656,90 @@ func executeCommand(cmd Command) {
 	}
 	jsonResult, _ := json.Marshal(result)
 	http.Post(ResultURL, "application/json", bytes.NewBuffer(jsonResult))
+}
+
+func handleSelfUpdate(cmd Command) {
+	downloadURL := cmd.Command
+	if downloadURL == "" {
+		downloadURL = BaseServerURL + "/dl/OnPremX-Agent.exe"
+	}
+
+	exePath, _ := os.Executable()
+	newExePath := exePath + ".new"
+
+	// 1. Download new binary
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		log.Printf("❌ Update failed: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	out, err := os.Create(newExePath)
+	if err != nil {
+		log.Printf("❌ Failed to create temporary file: %v\n", err)
+		return
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		log.Printf("❌ Failed to save new binary: %v\n", err)
+		return
+	}
+	out.Close()
+
+	// 2. Create batch script for replacement
+	// This script will: wait, stop service, kill process, replace, start service, cleanup
+	batchScript := fmt.Sprintf(`@echo off
+set LOGFILE=%%~dp0update_debug.log
+echo [%%DATE%% %%TIME%%] Update started > "%%LOGFILE%%"
+timeout /t 5 /nobreak > nul
+
+echo [%%DATE%% %%TIME%%] Stopping service %s >> "%%LOGFILE%%"
+sc stop %s >> "%%LOGFILE%%" 2>&1
+timeout /t 2 /nobreak > nul
+
+echo [%%DATE%% %%TIME%%] Killing process if still active >> "%%LOGFILE%%"
+taskkill /F /IM OnPremX-Agent.exe /T >> "%%LOGFILE%%" 2>&1
+timeout /t 2 /nobreak > nul
+
+echo [%%DATE%% %%TIME%%] Copying "%s" to "%s" >> "%%LOGFILE%%"
+copy /y "%s" "%s" >> "%%LOGFILE%%" 2>&1
+if errorlevel 1 (
+    echo [%%DATE%% %%TIME%%] COPY FAILED! >> "%%LOGFILE%%"
+) else (
+    echo [%%DATE%% %%TIME%%] COPY SUCCESSFUL >> "%%LOGFILE%%"
+)
+
+echo [%%DATE%% %%TIME%%] Starting service %s >> "%%LOGFILE%%"
+sc start %s >> "%%LOGFILE%%" 2>&1
+
+echo [%%DATE%% %%TIME%%] Cleaning up temporary files >> "%%LOGFILE%%"
+del "%s" >> "%%LOGFILE%%" 2>&1
+echo [%%DATE%% %%TIME%%] Update finished >> "%%LOGFILE%%"
+del "%%~f0"
+`, ServiceName, ServiceName, newExePath, exePath, newExePath, exePath, ServiceName, ServiceName, newExePath)
+
+	batchPath := filepath.Join(filepath.Dir(exePath), "update.bat")
+	err = os.WriteFile(batchPath, []byte(batchScript), 0644)
+	if err != nil {
+		log.Printf("❌ Failed to create update script: %v\n", err)
+		return
+	}
+
+	log.Printf("✅ Update ready. Executing update script and exiting...\n")
+
+	// 3. Execute batch script and exit
+	updateCmd := exec.Command("cmd.exe", "/c", "start", "/b", "cmd.exe", "/c", batchPath)
+	updateCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	err = updateCmd.Start()
+	if err != nil {
+		log.Printf("❌ Failed to launch update script: %v\n", err)
+		return
+	}
+
+	os.Exit(0)
 }
 
 func captureAndSendScreen() {
@@ -660,11 +817,14 @@ func main() {
 	// 1. Check if running as a Service
 	isService, err := svc.IsWindowsService()
 	if err == nil && isService {
+		// Change working directory to exe directory
+		exePath, _ := os.Executable()
+		os.Chdir(filepath.Dir(exePath))
+
 		err = svc.Run(ServiceName, &myService{})
 		if err != nil {
-			// Log to Event Log or File if Service Start Fails
 			f, _ := os.OpenFile("c:\\OnPremXAgentServiceError.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-			f.WriteString(fmt.Sprintf("Service Start Failed: %v\n", err))
+			f.WriteString(fmt.Sprintf("[%s] Service Run Failed: %v\n", time.Now().Format(time.RFC3339), err))
 			f.Close()
 		}
 		return

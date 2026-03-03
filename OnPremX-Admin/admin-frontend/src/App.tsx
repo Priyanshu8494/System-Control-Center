@@ -3,7 +3,7 @@ import axios from 'axios';
 import { 
   Monitor, Search, X, Sun, Moon, Database, ChevronRight, 
   Shield, Zap, Globe, Terminal, LayoutGrid, List as ListIcon, 
-  Activity, Layers, Box, AlertTriangle, ShieldCheck, RefreshCw, Trash2, Play, StopCircle, AlertCircle, Download
+  Activity, Layers, Box, AlertTriangle, ShieldCheck, RefreshCw, Trash2, Play, StopCircle, AlertCircle, Download, Settings, Bell
 } from 'lucide-react';
 
 // --- Interfaces ---
@@ -78,10 +78,18 @@ interface Script {
   content: string;
 }
 
+interface AlertData {
+  id: number;
+  agent_id: string;
+  type: string;
+  message: string;
+  created_at: string;
+}
+
 // --- Components ---
 
 function App() {
-  const [activeView, setActiveView] = useState<'overview' | 'endpoints' | 'scripts' | 'logs' | 'network'>('overview');
+  const [activeView, setActiveView] = useState<'overview' | 'endpoints' | 'scripts' | 'logs' | 'network' | 'settings' | 'alerts'>('overview');
   const [agents, setAgents] = useState<AgentData[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
@@ -95,6 +103,7 @@ function App() {
   const [selectedAgent, setSelectedAgent] = useState<AgentData | null>(null);
   const [showBulkUpdate, setShowBulkUpdate] = useState(false);
   const [scripts, setScripts] = useState<Script[]>([]);
+  const [alerts, setAlerts] = useState<AlertData[]>([]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -128,10 +137,34 @@ function App() {
     }
   };
 
+  const fetchAlerts = async () => {
+    try {
+      const response = await axios.get('/api/alerts');
+      setAlerts(response.data);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const [settings, setSettings] = useState<{key: string, value: string}[]>([]);
+  const fetchSettings = async () => {
+    try {
+      const response = await axios.get('/api/settings');
+      setSettings(response.data);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     fetchAgents();
     fetchScripts();
-    const interval = setInterval(fetchAgents, 5000);
+    fetchSettings();
+    fetchAlerts();
+    const interval = setInterval(() => {
+      fetchAgents();
+      fetchAlerts();
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -151,6 +184,16 @@ function App() {
     agent.hostname.toLowerCase().includes(searchTerm.toLowerCase()) ||
     agent.platform.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const handleSyncAll = async () => {
+    if (!window.confirm("Are you sure you want to sync ALL agents? This will restart services on all managed nodes.")) return;
+    try {
+      await axios.post('/api/agents/bulk-update', { hostnames: ["all"] });
+      alert("Queued sync command for ALL agents.");
+    } catch (e) {
+      alert("Failed to queue global sync.");
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#0f172a] text-slate-900 dark:text-slate-100 font-sans selection:bg-slate-900 selection:text-white transition-colors duration-300">
@@ -176,6 +219,13 @@ function App() {
                 onClick={() => setActiveView('overview')}
               />
               <SidebarItem 
+                icon={<Bell size={18}/>} 
+                label="Alerts" 
+                active={activeView === 'alerts'} 
+                onClick={() => setActiveView('alerts')}
+                badge={alerts.length > 0 ? alerts.length : undefined}
+              />
+              <SidebarItem 
                 icon={<Monitor size={18}/>} 
                 label="Endpoints" 
                 count={agents.length} 
@@ -199,6 +249,12 @@ function App() {
                 label="Network" 
                 active={activeView === 'network'} 
                 onClick={() => setActiveView('network')}
+              />
+              <SidebarItem 
+                icon={<Settings size={18}/>} 
+                label="Settings" 
+                active={activeView === 'settings'} 
+                onClick={() => setActiveView('settings')}
               />
             </nav>
           </div>
@@ -244,6 +300,13 @@ function App() {
                 <Download size={14} />
                 Agent Only (.exe)
               </a>
+
+              <button 
+                onClick={handleSyncAll}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600/10 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/20 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-indigo-600 hover:text-white dark:hover:bg-indigo-600 dark:hover:text-white transition-all shadow-sm"
+              >
+                Sync All
+              </button>
 
               <button 
                 onClick={() => setShowBulkUpdate(true)}
@@ -440,6 +503,102 @@ function App() {
                 </div>
               </div>
             )}
+
+            {activeView === 'alerts' && (
+              <div className="space-y-6">
+                <div>
+                  <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-[0.2em] mb-2">Security Alerts</h2>
+                  <p className="text-xs text-slate-400">Real-time system-wide security notifications.</p>
+                </div>
+
+                <div className="space-y-3">
+                  {alerts.length === 0 ? (
+                    <div className="minimal-card p-12 text-center border-dashed">
+                       <ShieldCheck size={32} className="mx-auto text-emerald-500 mb-4 opacity-50" />
+                       <p className="text-sm font-bold text-slate-900 dark:text-slate-100">All systems secured</p>
+                       <p className="text-xs text-slate-400">No new security alerts detected.</p>
+                    </div>
+                  ) : alerts.map((alert) => (
+                    <div key={alert.id} className="minimal-card p-5 flex items-start gap-4 border-l-4 border-l-rose-500">
+                      <div className="p-2.5 bg-rose-50 dark:bg-rose-500/10 rounded-xl text-rose-500">
+                        <AlertCircle size={20} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-start mb-1">
+                          <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wide">{alert.type}</h4>
+                          <span className="text-[10px] font-bold text-slate-400 tabular-nums uppercase">{new Date(alert.created_at).toLocaleString()}</span>
+                        </div>
+                        <p className="text-xs text-slate-600 dark:text-slate-400 mb-2">{alert.message}</p>
+                        <div className="flex items-center gap-2">
+                           <span className="text-[9px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded uppercase tracking-wider">Node: {alert.agent_id}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {activeView === 'settings' && (
+              <div className="space-y-8 max-w-2xl">
+                <div>
+                  <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-[0.2em] mb-2">Global System Settings</h2>
+                  <p className="text-xs text-slate-400">Configure global alerts and system parameters.</p>
+                </div>
+
+                <div className="minimal-card p-8 space-y-6">
+                  <div className="space-y-3">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                      <AlertTriangle size={12} className="text-amber-500" />
+                      USB Alert Recipient Email
+                    </label>
+                    <div className="flex gap-3">
+                      <input 
+                        type="email" 
+                        placeholder="admin@example.com"
+                        value={settings.find(s => s.key === 'alert_email')?.value || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSettings(prev => {
+                            const existing = prev.find(s => s.key === 'alert_email');
+                            if (existing) return prev.map(s => s.key === 'alert_email' ? {...s, value: val} : s);
+                            return [...prev, {key: 'alert_email', value: val}];
+                          });
+                        }}
+                        className="flex-1 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-slate-900 dark:text-slate-100"
+                      />
+                      <button 
+                        onClick={async () => {
+                          const email = settings.find(s => s.key === 'alert_email')?.value || '';
+                          try {
+                            await axios.post('/api/settings', { key: 'alert_email', value: email });
+                            alert('Alert email saved successfully.');
+                          } catch (e) {
+                            alert('Failed to save settings.');
+                          }
+                        }}
+                        className="minimal-button-primary px-6"
+                      >
+                        Save
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-400 italic">Jitni baar bhi USB plug-in hoga, isi email par alert jayega.</p>
+                  </div>
+
+                  <div className="pt-6 border-t border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between opacity-50 cursor-not-allowed">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900 dark:text-slate-100 mb-1">SMTP Configuration</h4>
+                        <p className="text-[10px] text-slate-400">Custom SMTP server settings (Locked in v0.0.17)</p>
+                      </div>
+                      <div className="w-10 h-5 bg-slate-200 dark:bg-slate-800 rounded-full relative">
+                         <div className="absolute left-1 top-1 w-3 h-3 bg-white dark:bg-slate-600 rounded-full"></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </main>
       </div>
@@ -468,7 +627,7 @@ function App() {
 
 // --- Minimal UI Components ---
 
-function SidebarItem({ icon, label, active = false, count, onClick }: any) {
+function SidebarItem({ icon, label, active = false, count, badge, onClick }: any) {
   return (
     <button 
       onClick={onClick}
@@ -482,7 +641,11 @@ function SidebarItem({ icon, label, active = false, count, onClick }: any) {
         <span className={active ? 'text-white' : 'text-slate-400 group-hover:text-slate-900'}>{icon}</span>
         <span className="text-sm font-medium">{label}</span>
       </div>
-      {count !== undefined && (
+      {badge ? (
+        <span className="bg-rose-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full animate-pulse">
+          {badge}
+        </span>
+      ) : count !== undefined && (
         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${active ? 'bg-white/20' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
           {count}
         </span>
@@ -549,7 +712,24 @@ function MinimalAgentCard({ agent, isOnline, onClick }: any) {
 
 function MinimalBulkUpdateModal({ agents, isOnline, onClose }: any) {
   const [selected, setSelected] = useState<string[]>([]);
+  
+  // Default to select all online agents on mount
+  useEffect(() => {
+    const onlineHostnames = agents
+      .filter((a: any) => isOnline(a.last_seen))
+      .map((a: any) => a.hostname);
+    setSelected(onlineHostnames);
+  }, [agents, isOnline]);
+
   const toggleSelect = (hostname: string) => setSelected(prev => prev.includes(hostname) ? prev.filter(h => h !== hostname) : [...prev, hostname]);
+  
+  const toggleSelectAll = () => {
+    if (selected.length === agents.length) {
+      setSelected([]);
+    } else {
+      setSelected(agents.map((a: any) => a.hostname));
+    }
+  };
 
   const handleUpdate = async () => {
     if (selected.length === 0) return;
@@ -577,7 +757,14 @@ function MinimalBulkUpdateModal({ agents, isOnline, onClose }: any) {
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 dark:bg-slate-800 text-slate-400 dark:text-slate-500 font-bold uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">
                 <tr>
-                  <th className="p-4 w-10"></th>
+                  <th className="p-4 w-10">
+                    <input 
+                      type="checkbox" 
+                      checked={selected.length === agents.length && agents.length > 0} 
+                      onChange={toggleSelectAll}
+                      className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-indigo-600 focus:ring-slate-900/5 dark:focus:ring-indigo-500/10 transition-all cursor-pointer" 
+                    />
+                  </th>
                   <th className="p-4">Node</th>
                   <th className="p-4">Version</th>
                   <th className="p-4 text-right">Status</th>
