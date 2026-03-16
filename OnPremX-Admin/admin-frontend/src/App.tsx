@@ -902,7 +902,7 @@ function MinimalAgentDetailModal({ agent, onClose, isOnline, formatUptime, scrip
           {activeTab === 'services' && <ServicesTab services={agent.services || []} hostname={agent.hostname} />}
           {activeTab === 'patches' && <PatchesTab patches={agent.patches || []} />}
           {activeTab === 'events' && <EventsTab events={agent.event_logs || []} />}
-          {activeTab === 'console' && <ConsoleTab hostname={agent.hostname} scripts={scripts} />}
+          {activeTab === 'console' && <ConsoleTab agent={agent} scripts={scripts} />}
           {activeTab === 'security' && <SecurityTab agent={agent} />}
         </div>
       </div>
@@ -1021,19 +1021,22 @@ function ServicesTab({ services, hostname }: { services: Service[], hostname: st
   );
 }
 
-function ConsoleTab({ hostname, scripts }: { hostname: string, scripts: Script[] }) {
+function ConsoleTab({ agent, scripts }: { agent: AgentData, scripts: Script[] }) {
   const [cmd, setCmd] = useState('');
   const [output, setOutput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [promptData, setPromptData] = useState<{ script: Script, value: string } | null>(null);
+
+  const hostname = agent.hostname;
 
   const runCommand = async (commandStr: string) => {
     setLoading(true);
-    setOutput(prev => `> Running: ${commandStr}\n${prev}`);
+    const displayCmd = commandStr.length > 50 ? commandStr.substring(0, 50) + '...' : commandStr;
+    setOutput(prev => `> Running: ${displayCmd}\n${prev}`);
     try {
       const res = await axios.post('/api/command/queue', { hostname, command: commandStr });
       const cmdId = res.data.command_id;
       
-      // Poll for result
       const poll = setInterval(async () => {
         const check = await axios.get(`/api/commands/${hostname}`);
         const found = check.data.find((c: any) => c.id === cmdId);
@@ -1049,13 +1052,73 @@ function ConsoleTab({ hostname, scripts }: { hostname: string, scripts: Script[]
     }
   };
 
+  const handleScriptClick = (script: Script) => {
+    if (script.content.includes('[DOMAIN]')) {
+      setPromptData({ script, value: '' });
+    } else {
+      runCommand(script.content);
+    }
+  };
+
+  const executePromptScript = () => {
+    if (!promptData) return;
+    const finalCmd = promptData.script.content.replace('[DOMAIN]', promptData.value);
+    runCommand(finalCmd);
+    setPromptData(null);
+  };
+
+  // Extract blocked domains from policies
+  const blockedDomains = (agent.policies || [])
+    .filter(p => p.startsWith('HOSTS:'))
+    .map(p => p.replace('HOSTS: 127.0.0.1 ', '').trim());
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {promptData && (
+        <div className="absolute inset-0 z-10 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-xl flex items-center justify-center p-6 border-2 border-indigo-500/30">
+          <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-md">
+            <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-widest mb-2">{promptData.script.name}</h4>
+            <p className="text-xs text-slate-500 mb-6">Enter the domain you wish to {promptData.script.name.toLowerCase().includes('whitelist') ? 'allow' : 'block'}:</p>
+            
+            <input 
+              type="text" 
+              autoFocus
+              value={promptData.value}
+              onChange={e => setPromptData({...promptData, value: e.target.value})}
+              placeholder="example.com"
+              className="minimal-input w-full mb-4 font-mono"
+            />
+
+            {promptData.script.name.toLowerCase().includes('whitelist') && blockedDomains.length > 0 && (
+              <div className="mb-6">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Detected Blocked Domains:</p>
+                <div className="flex flex-wrap gap-2">
+                  {blockedDomains.map(d => (
+                    <button 
+                      key={d}
+                      onClick={() => setPromptData({...promptData, value: d})}
+                      className="px-2 py-1 bg-slate-100 dark:bg-slate-700 hover:bg-indigo-500 hover:text-white rounded text-[10px] font-mono transition-colors"
+                    >
+                      {d}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-4">
+              <button onClick={() => setPromptData(null)} className="minimal-button-secondary flex-1">Cancel</button>
+              <button onClick={executePromptScript} className="minimal-button-primary flex-1">Execute</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex justify-between items-center">
-        <h3 className="text-[10px] font-bold text-slate-900 dark:text-slate-100 tracking-[0.2em] uppercase transition-colors">PowerShell Console</h3>
-        <div className="flex gap-2">
+        <h3 className="text-[10px] font-bold text-slate-900 dark:text-slate-100 tracking-[0.2em] uppercase transition-colors">Terminal Operations</h3>
+        <div className="flex flex-wrap gap-2 justify-end max-w-md">
           {scripts.map(s => (
-            <button key={s.id} onClick={() => runCommand(s.content)} className="minimal-button-secondary text-[10px] px-3 py-1.5">
+            <button key={s.id} onClick={() => handleScriptClick(s)} className="minimal-button-secondary text-[10px] px-3 py-1.5 whitespace-nowrap">
               {s.name}
             </button>
           ))}
@@ -1068,7 +1131,7 @@ function ConsoleTab({ hostname, scripts }: { hostname: string, scripts: Script[]
             value={cmd}
             onChange={e => setCmd(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && runCommand(cmd)}
-            placeholder="Type PowerShell command..."
+            placeholder="Type native PowerShell command..."
             className="minimal-input flex-1 mono font-medium"
           />
           <button onClick={() => runCommand(cmd)} disabled={loading} className="minimal-button-primary flex items-center gap-2">
@@ -1076,7 +1139,7 @@ function ConsoleTab({ hostname, scripts }: { hostname: string, scripts: Script[]
           </button>
         </div>
         <div className="bg-slate-900 dark:bg-black text-slate-100 dark:text-indigo-400 p-6 rounded-xl mono text-xs h-[400px] overflow-y-auto whitespace-pre-wrap shadow-inner border border-slate-800 dark:border-slate-700 transition-colors">
-          {output || 'System terminal ready. Type a command to begin execution.'}
+          {output || 'Secure execution environment ready. Multi-node synchronization active.'}
         </div>
       </div>
     </div>
