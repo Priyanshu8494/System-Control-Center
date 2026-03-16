@@ -79,7 +79,7 @@ type EventLog struct {
 
 // Script structure (Library)
 type Script struct {
-	ID          string `json:"id"`
+	ID          uint   `gorm:"primaryKey" json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Content     string `json:"content"` // PowerShell Code
@@ -162,21 +162,21 @@ type SecurityInfo struct {
 var (
 	// agentStore    = make(map[string]AgentData) // REPLACED BY DB
 	// commandQueue  = make(map[string][]Command) // REPLACED BY DB
-	scriptLibrary = []Script{
-		{ID: "1", Name: "Clear Temp Files", Description: "Clean system and all user temp folders", Content: "Get-ChildItem -Path 'C:\\Windows\\Temp\\*', 'C:\\Users\\*\\AppData\\Local\\Temp\\*' -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"},
-		{ID: "2", Name: "System Health Report", Description: "Uptime, Defender status, and top 5 largest files", Content: "$r=@{}; $u=(Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime; $r['Uptime']=\"$($u.Days)d $($u.Hours)h $($u.Minutes)m\"; $r['Defender']=(Get-Service WinDefend -ErrorAction SilentlyContinue).Status; $r['Top5Files']=Get-ChildItem C:\\Users -Recurse -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 5 Name, @{N='Size(MB)'; E={[math]::Round($_.Length/1MB,2)}}; $r | ConvertTo-Json"},
-		{ID: "3", Name: "Audit Local Admins", Description: "List all users with local administrator privileges", Content: "net localgroup administrators | Where-Object {$_ -and $_ -notmatch 'command completed' -and $_ -notmatch 'Alias' -and $_ -notmatch 'Comment' -and $_ -notmatch '\\-\\-\\-'} "},
-		{ID: "4", Name: "Network Diagnostic Reset", Description: "Flush DNS, reset Winsock and IP stack", Content: "Write-Host 'Flushing DNS...'; ipconfig /flushdns; Write-Host 'Resetting Winsock...'; netsh winsock reset; Write-Host 'Resetting IP stack...'; netsh int ip reset; Write-Host 'Done.'"},
-		{ID: "5", Name: "VPN & Public IP Audit", Description: "Detect active VPNs and external Geo-location", Content: "$r=@{}; $r['ActiveVPN']=(Get-NetAdapter | Where-Object {$_.InterfaceDescription -match 'OpenVPN|Tunnel|WireGuard|Fortinet|AnyConnect'} | Select-Object Name, Status); $r['PublicIP']=(Invoke-RestMethod -Uri 'https://ipinfo.io/json' -ErrorAction SilentlyContinue); $r | ConvertTo-Json"},
-		{ID: "6", Name: "Perimeter Port Audit", Description: "List all listening ports and associated apps", Content: "netstat -abno | findstr 'LISTENING'"},
-		{ID: "7", Name: "WiFi Security Scanner", Description: "Check for unsecure or open WiFi connections", Content: "netsh wlan show interfaces | Select-String -Pattern 'SSID|Authentication|Cipher'"},
-		{ID: "8", Name: "DNS Hijack Checker", Description: "Analyze system DNS for suspicious/unauthorized servers", Content: "Get-DnsClientServerAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, ServerAddresses"},
-		{ID: "9", Name: "Check Defender Defs", Description: "Check if Anti-Virus definitions are up to date", Content: "Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpComputerStatus | Select-Object AntivirusSignatureLastUpdated, RealTimeProtectionEnabled | ConvertTo-Json"},
-		{ID: "10", Name: "Whitelist Domain (Global)", Description: "Removes a specific domain from the blocklist (Hosts)", Content: "$d = '[DOMAIN]'; (Get-Content $env:windir\\System32\\drivers\\etc\\hosts) | Where-Object {$_ -notmatch $d} | Set-Content $env:windir\\System32\\drivers\\etc\\hosts; Write-Host \"Unblocked $d\""},
-		{ID: "11", Name: "Block Domain (Global)", Description: "Blocks a specific domain via the Hosts file", Content: "$d = '[DOMAIN]'; if (!(Select-String -Path $env:windir\\System32\\drivers\\etc\\hosts -Pattern $d)) { Add-Content -Path $env:windir\\System32\\drivers\\etc\\hosts -Value \"`n127.0.0.1 $d\"; Write-Host \"Blocked $d\" } else { Write-Host \"Already blocked.\" }"},
-		{ID: "12", Name: "Release RAM Now", Description: "Manually trigger immediate RAM optimization", Content: "$c = '[DllImport(\"kernel32.dll\")]public static extern bool SetProcessWorkingSetSize(IntPtr h, int min, int max);'; Add-Type -MemberDefinition $c -Name 'Mem' -Namespace 'API' -ErrorAction SilentlyContinue; Get-Process | ForEach-Object { try { [API.Mem]::SetProcessWorkingSetSize($_.Handle, -1, -1) } catch {} }; Write-Host 'Memory sets trimmed.'"},
-		{ID: "13", Name: "Install Permanent Optimizer", Description: "Schedule a background task to optimize RAM every hour permanently", Content: "$s = '$c = \\'[DllImport(\"kernel32.dll\")]public static extern bool SetProcessWorkingSetSize(IntPtr h, int min, int max);\\'; Add-Type -MemberDefinition $c -Name \\'Mem\\' -Namespace \\'API\\' -ErrorAction SilentlyContinue; Get-Process | ForEach-Object { try { [API.Mem]::SetProcessWorkingSetSize($_.Handle, -1, -1) } catch {} }'; $b = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($s)); $cmd = \"powershell.exe -NoProfile -WindowStyle Hidden -EncodedCommand $b\"; schtasks /create /tn 'OnPremX_RAM_Optimizer' /tr $cmd /sc hourly /mo 1 /rl highest /f; Write-Host 'Permanent hourly optimization task installed.'"},
-		{ID: "14", Name: "Remove Permanent Optimizer", Description: "Uninstall the scheduled RAM optimization task", Content: "schtasks /delete /tn 'OnPremX_RAM_Optimizer' /f; Write-Host 'Permanent optimization task removed.'"},
+	initialScripts = []Script{
+		{Name: "Clear Temp Files", Description: "Clean system and all user temp folders", Content: "Get-ChildItem -Path 'C:\\Windows\\Temp\\*', 'C:\\Users\\*\\AppData\\Local\\Temp\\*' -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"},
+		{Name: "System Health Report", Description: "Uptime, Defender status, and top 5 largest files", Content: "$r=@{}; $u=(Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime; $r['Uptime']=\"$($u.Days)d $($u.Hours)h $($u.Minutes)m\"; $r['Defender']=(Get-Service WinDefend -ErrorAction SilentlyContinue).Status; $r['Top5Files']=Get-ChildItem C:\\Users -Recurse -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 5 Name, @{N='Size(MB)'; E={[math]::Round($_.Length/1MB,2)}}; $r | ConvertTo-Json"},
+		{Name: "Audit Local Admins", Description: "List all users with local administrator privileges", Content: "net localgroup administrators | Where-Object {$_ -and $_ -notmatch 'command completed' -and $_ -notmatch 'Alias' -and $_ -notmatch 'Comment' -and $_ -notmatch '\\-\\-\\-'} "},
+		{Name: "Network Diagnostic Reset", Description: "Flush DNS, reset Winsock and IP stack", Content: "Write-Host 'Flushing DNS...'; ipconfig /flushdns; Write-Host 'Resetting Winsock...'; netsh winsock reset; Write-Host 'Resetting IP stack...'; netsh int ip reset; Write-Host 'Done.'"},
+		{Name: "VPN & Public IP Audit", Description: "Detect active VPNs and external Geo-location", Content: "$r=@{}; $r['ActiveVPN']=(Get-NetAdapter | Where-Object {$_.InterfaceDescription -match 'OpenVPN|Tunnel|WireGuard|Fortinet|AnyConnect'} | Select-Object Name, Status); $r['PublicIP']=(Invoke-RestMethod -Uri 'https://ipinfo.io/json' -ErrorAction SilentlyContinue); $r | ConvertTo-Json"},
+		{Name: "Perimeter Port Audit", Description: "List all listening ports and associated apps", Content: "netstat -abno | findstr 'LISTENING'"},
+		{Name: "WiFi Security Scanner", Description: "Check for unsecure or open WiFi connections", Content: "netsh wlan show interfaces | Select-String -Pattern 'SSID|Authentication|Cipher'"},
+		{Name: "DNS Hijack Checker", Description: "Analyze system DNS for suspicious/unauthorized servers", Content: "Get-DnsClientServerAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, ServerAddresses"},
+		{Name: "Check Defender Defs", Description: "Check if Anti-Virus definitions are up to date", Content: "Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpComputerStatus | Select-Object AntivirusSignatureLastUpdated, RealTimeProtectionEnabled | ConvertTo-Json"},
+		{Name: "Whitelist Domain (Global)", Description: "Removes a specific domain from the blocklist (Hosts)", Content: "$d = '[DOMAIN]'; (Get-Content $env:windir\\System32\\drivers\\etc\\hosts) | Where-Object {$_ -notmatch $d} | Set-Content $env:windir\\System32\\drivers\\etc\\hosts; Write-Host \"Unblocked $d\""},
+		{Name: "Block Domain (Global)", Description: "Blocks a specific domain via the Hosts file", Content: "$d = '[DOMAIN]'; if (!(Select-String -Path $env:windir\\System32\\drivers\\etc\\hosts -Pattern $d)) { Add-Content -Path $env:windir\\System32\\drivers\\etc\\hosts -Value \"`n127.0.0.1 $d\"; Write-Host \"Blocked $d\" } else { Write-Host \"Already blocked.\" }"},
+		{Name: "Release RAM Now", Description: "Manually trigger immediate RAM optimization", Content: "$c = '[DllImport(\"kernel32.dll\")]public static extern bool SetProcessWorkingSetSize(IntPtr h, int min, int max);'; Add-Type -MemberDefinition $c -Name 'Mem' -Namespace 'API' -ErrorAction SilentlyContinue; Get-Process | ForEach-Object { try { [API.Mem]::SetProcessWorkingSetSize($_.Handle, -1, -1) } catch {} }; Write-Host 'Memory sets trimmed.'"},
+		{Name: "Install Permanent Optimizer", Description: "Schedule a background task to optimize RAM every hour permanently", Content: "$s = '$c = \\'[DllImport(\"kernel32.dll\")]public static extern bool SetProcessWorkingSetSize(IntPtr h, int min, int max);\\'; Add-Type -MemberDefinition $c -Name \\'Mem\\' -Namespace \\'API\\' -ErrorAction SilentlyContinue; Get-Process | ForEach-Object { try { [API.Mem]::SetProcessWorkingSetSize($_.Handle, -1, -1) } catch {} }'; $b = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($s)); $cmd = \"powershell.exe -NoProfile -WindowStyle Hidden -EncodedCommand $b\"; schtasks /create /tn 'OnPremX_RAM_Optimizer' /tr $cmd /sc hourly /mo 1 /rl highest /f; Write-Host 'Permanent hourly optimization task installed.'"},
+		{Name: "Remove Permanent Optimizer", Description: "Uninstall the scheduled RAM optimization task", Content: "schtasks /delete /tn 'OnPremX_RAM_Optimizer' /f; Write-Host 'Permanent optimization task removed.'"},
 	}
 
 	// Remote View State
@@ -231,7 +231,16 @@ func main() {
 	}
 
 	// Migrate the schema
-	db.AutoMigrate(&AgentData{}, &Command{}, &ScheduledTask{}, &SystemSetting{}, &Alert{})
+	db.AutoMigrate(&AgentData{}, &Command{}, &ScheduledTask{}, &SystemSetting{}, &Alert{}, &Script{})
+
+	// Pre-populate script library if empty
+	var count int64
+	db.Model(&Script{}).Count(&count)
+	if count == 0 {
+		for _, s := range initialScripts {
+			db.Create(&s)
+		}
+	}
 
 	// Start Scheduler
 	go schedulerLoop()
@@ -936,9 +945,32 @@ del ""%%~f0""
 
 			// List Scripts (Admin -> Server)
 			protected.GET("/scripts", func(c *gin.Context) {
-				storeMutex.RLock()
-				defer storeMutex.RUnlock()
-				c.JSON(http.StatusOK, scriptLibrary)
+				var scripts []Script
+				db.Find(&scripts)
+				c.JSON(http.StatusOK, scripts)
+			})
+
+			// Add/Update Script
+			protected.POST("/scripts", func(c *gin.Context) {
+				var req Script
+				if err := c.ShouldBindJSON(&req); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+					return
+				}
+
+				if req.ID != 0 {
+					db.Save(&req)
+				} else {
+					db.Create(&req)
+				}
+				c.JSON(http.StatusOK, req)
+			})
+
+			// Delete Script
+			protected.DELETE("/scripts/:id", func(c *gin.Context) {
+				id := c.Param("id")
+				db.Delete(&Script{}, id)
+				c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 			})
 
 			// --- Alerts ---

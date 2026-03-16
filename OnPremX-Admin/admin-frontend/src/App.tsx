@@ -106,6 +106,8 @@ function App() {
   const [showBulkUpdate, setShowBulkUpdate] = useState(false);
   const [scripts, setScripts] = useState<Script[]>([]);
   const [alerts, setAlerts] = useState<AlertData[]>([]);
+  const [showScriptModal, setShowScriptModal] = useState(false);
+  const [newScript, setNewScript] = useState<Partial<Script>>({ name: '', description: '', content: '' });
 
   useEffect(() => {
     const root = document.documentElement;
@@ -443,24 +445,42 @@ function App() {
                 <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-widest">Central Script Library</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {scripts.map(script => (
-                    <div key={script.id} className="minimal-card p-6 flex flex-col justify-between">
+                    <div key={script.id} className="minimal-card p-6 flex flex-col justify-between group">
                       <div>
-                        <div className="flex items-center gap-3 mb-4">
-                          <div className="p-2 bg-slate-50 dark:bg-slate-900 rounded-lg text-slate-900 dark:text-slate-100 border border-slate-100 dark:border-slate-700">
-                            <Terminal size={18} />
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-3">
+                            <div className="p-2 bg-slate-50 dark:bg-slate-900 rounded-lg text-slate-900 dark:text-slate-100 border border-slate-100 dark:border-slate-700">
+                              <Terminal size={18} />
+                            </div>
+                            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">{script.name}</h3>
                           </div>
-                          <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">{script.name}</h3>
+                          <button 
+                            onClick={async () => {
+                              if(window.confirm("Delete this script?")) {
+                                try {
+                                  await axios.delete(`/api/scripts/${script.id}`);
+                                  fetchScripts();
+                                } catch(e) { alert("Failed to delete"); }
+                              }
+                            }}
+                            className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
+                          >
+                            <Trash2 size={14} />
+                          </button>
                         </div>
                         <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed mb-6">{script.description}</p>
                       </div>
                       <button className="minimal-button-secondary w-full text-[10px] uppercase tracking-widest">Execute on Grid</button>
                     </div>
                   ))}
-                  <div className="minimal-card p-6 border-dashed dark:border-slate-700 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                    <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-full text-slate-400 mb-3">
+                  <div 
+                    onClick={() => setShowScriptModal(true)}
+                    className="minimal-card p-6 border-dashed dark:border-slate-700 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-all hover:scale-[1.02]"
+                  >
+                    <div className="p-3 bg-indigo-50 dark:bg-indigo-500/10 rounded-full text-indigo-500 mb-3">
                       <Zap size={20} />
                     </div>
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">New Script</span>
+                    <span className="text-[10px] font-bold text-slate-900 dark:text-slate-100 uppercase tracking-widest">New System Script</span>
                   </div>
                 </div>
               </div>
@@ -622,6 +642,75 @@ function App() {
           formatUptime={formatUptime}
           scripts={scripts}
         />
+      )}
+
+      {showScriptModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/10 dark:bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[90vh]">
+            <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-[0.2em] mb-1">Develop New Script</h2>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium uppercase tracking-widest">Add to global automation library</p>
+              </div>
+              <button onClick={() => setShowScriptModal(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="p-8 space-y-6 overflow-y-auto custom-scrollbar">
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Script Name</label>
+                <input 
+                  type="text" 
+                  placeholder="e.g. Optimized Disk Cleanup"
+                  className="minimal-input w-full font-bold"
+                  value={newScript.name}
+                  onChange={e => setNewScript({...newScript, name: e.target.value})}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Short Description</label>
+                <input 
+                  type="text" 
+                  placeholder="What does this automation do?"
+                  className="minimal-input w-full"
+                  value={newScript.description}
+                  onChange={e => setNewScript({...newScript, description: e.target.value})}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                  <Terminal size={12}/> PowerShell Payload
+                </label>
+                <textarea 
+                  placeholder="Get-Process | ..."
+                  className="minimal-input w-full font-mono text-xs h-48 focus:ring-indigo-500/20"
+                  value={newScript.content}
+                  onChange={e => setNewScript({...newScript, content: e.target.value})}
+                />
+              </div>
+            </div>
+
+            <div className="p-8 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 flex gap-4">
+              <button onClick={() => setShowScriptModal(false)} className="minimal-button-secondary flex-1">Discard</button>
+              <button 
+                onClick={async () => {
+                  if(!newScript.name || !newScript.content) return alert("Fill required fields");
+                  try {
+                    await axios.post('/api/scripts', newScript);
+                    setShowScriptModal(false);
+                    setNewScript({ name: '', description: '', content: '' });
+                    const res = await axios.get('/api/scripts');
+                    setScripts(res.data);
+                  } catch(e) { alert("Failed to save script"); }
+                }}
+                className="minimal-button-primary flex-1"
+              >
+                Save & Index
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
