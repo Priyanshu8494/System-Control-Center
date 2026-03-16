@@ -70,6 +70,7 @@ interface AgentData {
   tags?: string[];
   group?: string;
   browsers?: string[];
+  policies?: string[];
 }
 
 interface Script {
@@ -1121,6 +1122,18 @@ function SecurityTab({ agent }: { agent: AgentData }) {
                {agent.security?.rdp_sessions?.length ? agent.security.rdp_sessions.map((s, i) => <div key={i} className="text-slate-500 flex items-center gap-2 mb-1"><Activity size={12}/> {s}</div>) : <p className="text-slate-300 dark:text-slate-700 italic">No active sessions</p>}
             </div>
          </div>
+          <div className="mt-8 pt-8 border-t border-slate-100 dark:border-slate-800">
+             <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4">Domain Policies & Whitelists</h4>
+             <div className="space-y-2">
+                {agent.policies && agent.policies.length > 0 ? agent.policies.map((p: string, i: number) => (
+                  <div key={i} className="text-xs bg-slate-50 dark:bg-slate-900 p-2 rounded border border-slate-100 dark:border-slate-800 flex items-center gap-2">
+                     <Globe size={12} className="text-indigo-500" />
+                     <span className="font-mono text-slate-600 dark:text-slate-400">{p}</span>
+                  </div>
+                )) : <p className="text-xs text-slate-400 italic text-center py-4">No domain policies detected on this endpoint.</p>}
+             </div>
+             <p className="text-[9px] text-slate-400 mt-4 italic">* These entries are gathered from the Windows Hosts file and Browser Enterprise Policies.</p>
+          </div>
       </div>
     </div>
   );
