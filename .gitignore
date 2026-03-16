@@ -36,3 +36,9 @@ tmp/
 # Downloaded agent binary
 downloads/*.exe
 !downloads/.gitkeep
+
+# SDKs and large archives
+go/
+*.tar
+*.zip
+*.db

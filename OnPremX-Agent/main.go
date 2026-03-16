@@ -219,6 +219,7 @@ type SystemInfo struct {
 	Patches    []Patch      `json:"patches"`
 	EventLogs  []EventLog   `json:"event_logs"`
 	Security   SecurityInfo `json:"security"`
+	Browsers   []string     `json:"browsers"`
 }
 
 type SecurityInfo struct {
@@ -325,7 +326,40 @@ func getSystemInfo() SystemInfo {
 		Software:        cachedSoftware,
 		Services:        cachedServices,
 		Security:        security,
+		Browsers:        getBrowsers(),
 	}
+}
+
+func getBrowsers() []string {
+	var browsers []string
+	psScript := `Get-ItemProperty HKLM:\SOFTWARE\Clients\StartMenuInternet\* | Select-Object -ExpandProperty PSChildName`
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", psScript)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" && !strings.Contains(strings.ToLower(trimmed), "iexplore") {
+				browsers = append(browsers, trimmed)
+			}
+		}
+	}
+	// Always check for Edge as it might not be in that key sometimes
+	edgePath := `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`
+	if _, err := os.Stat(edgePath); err == nil {
+		found := false
+		for _, b := range browsers {
+			if strings.Contains(strings.ToLower(b), "edge") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			browsers = append(browsers, "Microsoft Edge")
+		}
+	}
+	return browsers
 }
 
 func getSecurityInfo() SecurityInfo {

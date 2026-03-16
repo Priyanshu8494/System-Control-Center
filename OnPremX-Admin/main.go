@@ -147,6 +147,7 @@ type AgentData struct {
 	Security   SecurityInfo `gorm:"serializer:json" json:"security"`
 	Tags       []string     `gorm:"serializer:json" json:"tags"`
 	Group      string       `json:"group"`
+	Browsers   []string     `gorm:"serializer:json" json:"browsers"`
 }
 
 // SecurityInfo structure
@@ -161,9 +162,15 @@ var (
 	// agentStore    = make(map[string]AgentData) // REPLACED BY DB
 	// commandQueue  = make(map[string][]Command) // REPLACED BY DB
 	scriptLibrary = []Script{
-		{ID: "1", Name: "Clear Temp Files", Description: "Removes temporary files to free up space", Content: "Remove-Item -Path $env:TEMP\\* -Recurse -Force -ErrorAction SilentlyContinue"},
-		{ID: "2", Name: "Restart Print Spooler", Description: "Restarts the print spooler service", Content: "Restart-Service -Name Spooler -Force"},
-		{ID: "3", Name: "Check Disk Space (GB)", Description: "Checks disk space on C: drive in GB", Content: "Get-PSDrive C | Select-Object @{N='Used(GB)';E={'{0:N2}' -f ($_.Used/1GB)}}, @{N='Free(GB)';E={'{0:N2}' -f ($_.Free/1GB)}}"},
+		{ID: "1", Name: "Clear Temp Files", Description: "Clean system and all user temp folders", Content: "Get-ChildItem -Path 'C:\\Windows\\Temp\\*', 'C:\\Users\\*\\AppData\\Local\\Temp\\*' -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"},
+		{ID: "2", Name: "System Health Report", Description: "Uptime, Defender status, and top 5 largest files", Content: "$r=@{}; $u=(Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime; $r['Uptime']=\"$($u.Days)d $($u.Hours)h $($u.Minutes)m\"; $r['Defender']=(Get-Service WinDefend -ErrorAction SilentlyContinue).Status; $r['Top5Files']=Get-ChildItem C:\\Users -Recurse -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 5 Name, @{N='Size(MB)'; E={[math]::Round($_.Length/1MB,2)}}; $r | ConvertTo-Json"},
+		{ID: "3", Name: "Audit Local Admins", Description: "List all users with local administrator privileges", Content: "net localgroup administrators | Where-Object {$_ -and $_ -notmatch 'command completed' -and $_ -notmatch 'Alias' -and $_ -notmatch 'Comment' -and $_ -notmatch '\\-\\-\\-'} "},
+		{ID: "4", Name: "Network Diagnostic Reset", Description: "Flush DNS, reset Winsock and IP stack", Content: "Write-Host 'Flushing DNS...'; ipconfig /flushdns; Write-Host 'Resetting Winsock...'; netsh winsock reset; Write-Host 'Resetting IP stack...'; netsh int ip reset; Write-Host 'Done.'"},
+		{ID: "5", Name: "VPN & Public IP Audit", Description: "Detect active VPNs and external Geo-location", Content: "$r=@{}; $r['ActiveVPN']=(Get-NetAdapter | Where-Object {$_.InterfaceDescription -match 'OpenVPN|Tunnel|WireGuard|Fortinet|AnyConnect'} | Select-Object Name, Status); $r['PublicIP']=(Invoke-RestMethod -Uri 'https://ipinfo.io/json' -ErrorAction SilentlyContinue); $r | ConvertTo-Json"},
+		{ID: "6", Name: "Perimeter Port Audit", Description: "List all listening ports and associated apps", Content: "netstat -abno | findstr 'LISTENING'"},
+		{ID: "7", Name: "WiFi Security Scanner", Description: "Check for unsecure or open WiFi connections", Content: "netsh wlan show interfaces | Select-String -Pattern 'SSID|Authentication|Cipher'"},
+		{ID: "8", Name: "DNS Hijack Checker", Description: "Analyze system DNS for suspicious/unauthorized servers", Content: "Get-DnsClientServerAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, ServerAddresses"},
+		{ID: "9", Name: "Check Defender Defs", Description: "Check if Anti-Virus definitions are up to date", Content: "Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpComputerStatus | Select-Object AntivirusSignatureLastUpdated, RealTimeProtectionEnabled | ConvertTo-Json"},
 	}
 
 	// Remote View State
@@ -384,6 +391,9 @@ func main() {
 				}
 				if agent.CPUModel == "" {
 					agent.CPUModel = existing.CPUModel
+				}
+				if len(agent.Browsers) == 0 {
+					agent.Browsers = existing.Browsers
 				}
 			}
 

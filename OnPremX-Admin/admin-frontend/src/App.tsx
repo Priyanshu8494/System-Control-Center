@@ -69,6 +69,7 @@ interface AgentData {
   security?: SecurityInfo;
   tags?: string[];
   group?: string;
+  browsers?: string[];
 }
 
 interface Script {
@@ -868,6 +869,15 @@ function MinimalAgentDetailModal({ agent, onClose, isOnline, formatUptime, scrip
                 <MinimalDetailSection title="Network">
                   <MinimalDetailRow label="Local IP" value={agent.ip_address} />
                   <MinimalDetailRow label="MAC Address" value={agent.mac_address} />
+                </MinimalDetailSection>
+                <MinimalDetailSection title="Web Browsers">
+                  {agent.browsers && agent.browsers.length > 0 ? (
+                    agent.browsers.map((b: string, i: number) => (
+                      <MinimalDetailRow key={i} label={`Browser ${i+1}`} value={b} />
+                    ))
+                  ) : (
+                    <p className="text-xs text-slate-400 italic">No primary browsers indexed.</p>
+                  )}
                 </MinimalDetailSection>
               </div>
               <div className="space-y-8">
