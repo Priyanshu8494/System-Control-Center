@@ -220,6 +220,7 @@ type SystemInfo struct {
 	EventLogs  []EventLog   `json:"event_logs"`
 	Security   SecurityInfo `json:"security"`
 	Browsers   []string     `json:"browsers"`
+	Policies   []string     `json:"policies"` // Domain Whitelist/Blocklist info
 }
 
 type SecurityInfo struct {
@@ -327,7 +328,70 @@ func getSystemInfo() SystemInfo {
 		Services:        cachedServices,
 		Security:        security,
 		Browsers:        getBrowsers(),
+		Policies:        getSecurityPolicies(),
 	}
+}
+
+func getSecurityPolicies() []string {
+	var policies []string
+	// 1. Read Hosts file for manual blocks
+	hostsPath := `C:\Windows\System32\drivers\etc\hosts`
+	content, err := os.ReadFile(hostsPath)
+	if err == nil {
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+				policies = append(policies, "HOSTS: "+trimmed)
+			}
+		}
+	}
+
+	// 2. Check Browser Policies (Registry)
+	chromePath := `SOFTWARE\Policies\Google\Chrome\URLAllowlist`
+	policies = append(policies, getRegistryValues("HKLM", chromePath, "Chrome Whitelist")...)
+
+	return policies
+}
+
+func getRegistryValues(root, path, label string) []string {
+	var vals []string
+	ps := fmt.Sprintf(`Get-ItemProperty "HKLM:\%s" -ErrorAction SilentlyContinue | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name`, path)
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", ps)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, _ := cmd.Output()
+	lines := strings.Split(string(out), "\n")
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" {
+			vals = append(vals, label+": "+trimmed)
+		}
+	}
+	return vals
+}
+
+func startAutoOptimizer() {
+	ticker := time.NewTicker(5 * time.Second)
+	go func() {
+		for range ticker.C {
+			// Optimization: Trim Working Sets of all processes
+			psScript := `
+			$c = '[DllImport("kernel32.dll")]public static extern bool SetProcessWorkingSetSize(IntPtr h, int min, int max);'
+			Add-Type -MemberDefinition $c -Name "MemOpt" -Namespace "WinAPI" -ErrorAction SilentlyContinue
+			Get-Process | Where-Object { $_.WorkingSet -gt 50MB } | ForEach-Object {
+				try { [WinAPI.MemOpt]::SetProcessWorkingSetSize($_.Handle, -1, -1) } catch {}
+			}
+			`
+			cmd := exec.Command("powershell", "-NoProfile", "-Command", psScript)
+			cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			cmd.Run()
+
+			// Also clear system Temp every 300 seconds (5 mins) instead of 5 to avoid disk thrashing
+			if time.Now().Unix()%300 < 5 {
+				os.RemoveAll(os.Getenv("TEMP"))
+			}
+		}
+	}()
 }
 
 func getBrowsers() []string {
@@ -886,5 +950,6 @@ func main() {
 
 	log.Printf("Server URL: %s\n", ServerURL)
 
+	startAutoOptimizer()
 	runAgent()
 }
