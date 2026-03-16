@@ -64,22 +64,24 @@ The system includes pre-built PowerShell automations:
     *   **Perimeter Port Audit**: Lists every port in "LISTENING" mode.
     *   **WiFi Security Scanner**: Checks for unsecure/open WiFi encrypted connections.
     *   **DNS Hijack Checker**: Audits assigned DNS servers for rogue entries.
+    *   **Interactive Domain Manager**: Block/Whitelist specific domains using the local Hosts firewall with parametric popup input.
+
+### ⚡ Performance Optimization
+*   **Real-time RAM Release**: Immediate process working set trimming via WinAPI.
+*   **Permanent Hourly Optimizer**: A system-level scheduled task that persists even when the agent is closed, ensuring long-term system stability.
 
 ---
 
-## 🛠️ How to Update the System
+## 🛠️ How to Update & Expand the System
 
-### Adding New Automated Scripts
-To add a new script to the global library, modify the `scriptLibrary` variable in `OnPremX-Admin/main.go`:
-```go
-scriptLibrary = []Script{
-    {ID: "X", Name: "My New Script", Description: "What it does", Content: "PowerShell Command Here"},
-}
-```
-*After modification, rebuild the Admin Server.*
+### Adding New Automated Scripts (Dynamic)
+As of v0.0.18, scripts are stored in the **onpremx.db** (SQLite). You no longer need to modify the source code to add scripts.
+1. Navigate to the **Scripts** tab in the dashboard.
+2. Click the **"New System Script"** card.
+3. Your new automation is instantly indexed and available across all endpoints.
 
 ### Modifying Agent Collection
-To collect more data (e.g., GPU info, BIOS version), update the `SystemInfo` struct and `collectSystemInfo()` function in `OnPremX-Agent/main.go`.
+To collect more hardware data (e.g., GPU details, BIOS version), update the `AgentData` struct in both `OnPremX-Admin/main.go` and `OnPremX-Agent/main.go`, and implement the collector in the Agent.
 
 ---
 

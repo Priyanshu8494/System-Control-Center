@@ -26,6 +26,11 @@ A professional, high-performance, and secure Remote Monitoring and Management (R
 *   **Network Port Audit**: Monitor all "Listening" ports to catch unauthorized backdoors.
 *   **WiFi Security Scanner**: Identify unsecure/open WiFi connections on mobile endpoints.
 *   **DNS Hijack Guard**: Audit system DNS settings to prevent phishing redirections.
+*   **Interactive Domain Firewall**: Block or Whitelist domains with real-time popup prompts and automatic blocklist scanning.
+
+### ⚡ Performance & Automation (New!)
+*   **Permanent RAM Optimizer**: Background "Set-and-Forget" scheduling for 24/7 memory performance.
+*   **Dynamic Script Engine**: Create, Edit, and Delete your own PowerShell automations directly from the UI.
 
 ---
 
