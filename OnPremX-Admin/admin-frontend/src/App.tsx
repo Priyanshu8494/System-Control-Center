@@ -1114,7 +1114,7 @@ function ConsoleTab({ agent, scripts }: { agent: AgentData, scripts: Script[] })
   const [cmd, setCmd] = useState('');
   const [output, setOutput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [promptData, setPromptData] = useState<{ script: Script, value: string } | null>(null);
+  const [promptData, setPromptData] = useState<{ script: Script, values: Record<string, string>, keys: string[] } | null>(null);
 
   const hostname = agent.hostname;
 
@@ -1142,8 +1142,10 @@ function ConsoleTab({ agent, scripts }: { agent: AgentData, scripts: Script[] })
   };
 
   const handleScriptClick = (script: Script) => {
-    if (script.content.includes('[DOMAIN]')) {
-      setPromptData({ script, value: '' });
+    const keys = script.content.match(/\[[A-Z0-9_]+\]/g);
+    if (keys && keys.length > 0) {
+      const uniqueKeys = Array.from(new Set(keys));
+      setPromptData({ script, values: {}, keys: uniqueKeys });
     } else {
       runCommand(script.content);
     }
@@ -1151,7 +1153,14 @@ function ConsoleTab({ agent, scripts }: { agent: AgentData, scripts: Script[] })
 
   const executePromptScript = () => {
     if (!promptData) return;
-    const finalCmd = promptData.script.content.replace('[DOMAIN]', promptData.value);
+    let finalCmd = promptData.script.content;
+    const missing = promptData.keys.filter(k => !promptData.values[k]);
+    if (missing.length > 0) return alert("Please fill all fields");
+    
+    promptData.keys.forEach(k => {
+      finalCmd = finalCmd.replace(new RegExp(k.replace('[','\\[').replace(']','\\]'), 'g'), promptData.values[k]);
+    });
+    
     runCommand(finalCmd);
     setPromptData(null);
   };
@@ -1167,25 +1176,31 @@ function ConsoleTab({ agent, scripts }: { agent: AgentData, scripts: Script[] })
         <div className="absolute inset-0 z-10 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-xl flex items-center justify-center p-6 border-2 border-indigo-500/30">
           <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-md">
             <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-widest mb-2">{promptData.script.name}</h4>
-            <p className="text-xs text-slate-500 mb-6">Enter the domain you wish to {promptData.script.name.toLowerCase().includes('whitelist') ? 'allow' : 'block'}:</p>
+            <p className="text-[10px] text-slate-400 font-bold uppercase mb-6 tracking-wider">Required Parameters:</p>
             
-            <input 
-              type="text" 
-              autoFocus
-              value={promptData.value}
-              onChange={e => setPromptData({...promptData, value: e.target.value})}
-              placeholder="example.com"
-              className="minimal-input w-full mb-4 font-mono"
-            />
+            <div className="space-y-4 mb-6">
+              {promptData.keys.map(k => (
+                <div key={k} className="space-y-1">
+                  <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{k.replace('[','').replace(']','').replace('_',' ')}</label>
+                  <input 
+                    type="text" 
+                    value={promptData.values[k] || ''}
+                    onChange={e => setPromptData({...promptData, values: {...promptData.values, [k]: e.target.value}})}
+                    placeholder={k === '[UNC_PATH]' ? '\\\\192.168.1.1\\Share' : k === '[FILE_NAME]' ? 'installer.exe' : '...'}
+                    className="minimal-input w-full font-mono text-xs"
+                  />
+                </div>
+              ))}
+            </div>
 
-            {promptData.script.name.toLowerCase().includes('whitelist') && blockedDomains.length > 0 && (
+            {promptData.keys.includes('[DOMAIN]') && blockedDomains.length > 0 && (
               <div className="mb-6">
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Detected Blocked Domains:</p>
                 <div className="flex flex-wrap gap-2">
                   {blockedDomains.map(d => (
                     <button 
                       key={d}
-                      onClick={() => setPromptData({...promptData, value: d})}
+                      onClick={() => setPromptData({...promptData, values: {...promptData.values, '[DOMAIN]': d}})}
                       className="px-2 py-1 bg-slate-100 dark:bg-slate-700 hover:bg-indigo-500 hover:text-white rounded text-[10px] font-mono transition-colors"
                     >
                       {d}
@@ -1197,7 +1212,7 @@ function ConsoleTab({ agent, scripts }: { agent: AgentData, scripts: Script[] })
 
             <div className="flex gap-3 mt-4">
               <button onClick={() => setPromptData(null)} className="minimal-button-secondary flex-1">Cancel</button>
-              <button onClick={executePromptScript} className="minimal-button-primary flex-1">Execute</button>
+              <button onClick={executePromptScript} className="minimal-button-primary flex-1">Launch</button>
             </div>
           </div>
         </div>
