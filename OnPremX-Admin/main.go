@@ -1,13 +1,15 @@
 package main
 
-import (
+	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
 	"net/smtp"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,9 @@ var db *gorm.DB
 
 // JWT Secret Key (Change this in production)
 var jwtSecretKey = []byte("OnPremXSuperSecretKey2026")
+
+// Agent Authentication Key (Shared secret)
+var AgentSecretKey = "OPX-Agent-Secret-2026"
 
 // Login Credentials
 const (
@@ -144,8 +149,9 @@ type AgentData struct {
 	Services   []Service    `gorm:"serializer:json" json:"services"`
 	Patches    []Patch      `gorm:"serializer:json" json:"patches"`
 	EventLogs  []EventLog   `gorm:"serializer:json" json:"event_logs"`
-	Security   SecurityInfo `gorm:"serializer:json" json:"security"`
-	Tags       []string     `gorm:"serializer:json" json:"tags"`
+	Security        SecurityInfo `gorm:"serializer:json" json:"security"`
+	DesiredSecurity SecurityInfo `gorm:"serializer:json" json:"desired_security"`
+	Tags            []string     `gorm:"serializer:json" json:"tags"`
 	Group      string       `json:"group"`
 	Browsers   []string     `gorm:"serializer:json" json:"browsers"`
 	Policies   []string     `gorm:"serializer:json" json:"policies"`
@@ -307,8 +313,12 @@ func main() {
 			})
 		})
 
-		// Agent Heartbeat (Public, No Auth)
-		api.POST("/heartbeat", func(c *gin.Context) {
+		// --- Agent Facing Endpoints (Protected by Agent Key) ---
+		agent_api := api.Group("/")
+		agent_api.Use(agentAuthMiddleware())
+		{
+			// Agent Heartbeat
+			agent_api.POST("/heartbeat", func(c *gin.Context) {
 			var agent AgentData
 			if err := c.ShouldBindJSON(&agent); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -434,33 +444,22 @@ func main() {
 
 			fmt.Printf("💓 Heartbeat from: %s (IP: %s, SW: %d, SVC: %d, PT: %d)\n", agent.Hostname, agent.IPAddress, len(agent.Software), len(agent.Services), len(agent.Patches))
 
+			var desiredSecurity SecurityInfo
+			if err == nil {
+				desiredSecurity = existing.DesiredSecurity
+			}
+
 			c.JSON(http.StatusOK, gin.H{
-				"status":        "ok",
-				"command":       nextCmd,
-				"admin_active":  adminActive,
-				"stream_screen": streamScreen,
+				"status":           "ok",
+				"command":          nextCmd,
+				"admin_active":     adminActive,
+				"stream_screen":    streamScreen,
+				"desired_security": desiredSecurity,
 			})
 		})
 
-		// --- Remote View Endpoints ---
-
-		// 1. Toggle Screen Streaming (Admin -> Server)
-		api.POST("/agent/stream/:hostname", func(c *gin.Context) {
-			hostname := c.Param("hostname")
-			enabled := c.Query("enabled") == "true"
-
-			storeMutex.Lock()
-			streamActive[hostname] = enabled
-			if !enabled {
-				delete(screenBuffer, hostname) // Clear buffer when stopping
-			}
-			storeMutex.Unlock()
-
-			c.JSON(http.StatusOK, gin.H{"status": "updated", "streaming": enabled})
-		})
-
-		// 2. Receive Screenshot (Agent -> Server)
-		api.POST("/agent/screenshot", func(c *gin.Context) {
+		// 1. Receive Screenshot (Agent -> Server)
+		agent_api.POST("/agent/screenshot", func(c *gin.Context) {
 			var req struct {
 				Hostname string `json:"hostname"`
 				Image    string `json:"image"` // Base64 encoded image
@@ -471,18 +470,44 @@ func main() {
 			}
 
 			storeMutex.Lock()
-			// Only accept if streaming is active (security/perf)
 			if streamActive[req.Hostname] {
-				// Store raw bytes if possible, but keeping Base64 string is fine for now
-				// Actually, storing bytes is better for serving directly as image
-				// But simpler to just store the base64 string and serve it as JSON or Image
-				// Let's store the Base64 string directly for simplicity in this MVP
 				screenBuffer[req.Hostname] = []byte(req.Image)
 			}
 			storeMutex.Unlock()
 
 			c.JSON(http.StatusOK, gin.H{"status": "received"})
 		})
+
+		// 2. Receive Command Result (Agent -> Server)
+		agent_api.POST("/command/result", func(c *gin.Context) {
+			var res struct {
+				Hostname  string `json:"hostname"`
+				CommandID string `json:"command_id"`
+				Output    string `json:"output"`
+				Error     string `json:"error"`
+			}
+			if err := c.ShouldBindJSON(&res); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+
+			var cmd Command
+			if err := db.First(&cmd, "id = ?", res.CommandID).Error; err == nil {
+				if cmd.Status != "cancelled" {
+					cmd.Status = "completed"
+					if res.Error != "" {
+						cmd.Status = "failed"
+						cmd.Output = res.Error + "\n" + res.Output
+					} else {
+						cmd.Output = res.Output
+					}
+					db.Save(&cmd)
+				}
+			}
+
+			c.JSON(http.StatusOK, gin.H{"status": "received"})
+		})
+	}
 
 		// 3. Get Latest Screenshot (Admin -> Server)
 		api.GET("/agent/:hostname/screen", func(c *gin.Context) {
@@ -624,37 +649,6 @@ func main() {
 				c.JSON(http.StatusOK, gin.H{"status": "cancellation_requested"})
 			})
 
-			// Receive Command Result (Agent -> Server)
-			api.POST("/command/result", func(c *gin.Context) {
-				var res struct {
-					Hostname  string `json:"hostname"`
-					CommandID string `json:"command_id"`
-					Output    string `json:"output"`
-					Error     string `json:"error"`
-				}
-				if err := c.ShouldBindJSON(&res); err != nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-					return
-				}
-
-				var cmd Command
-				if err := db.First(&cmd, "id = ?", res.CommandID).Error; err == nil {
-					// Ignore updates for cancelled commands unless it's the final output
-					if cmd.Status != "cancelled" {
-						cmd.Status = "completed"
-						if res.Error != "" {
-							cmd.Status = "failed"
-							cmd.Output = res.Error + "\n" + res.Output
-						} else {
-							cmd.Output = res.Output
-						}
-						db.Save(&cmd)
-					}
-				}
-
-				c.JSON(http.StatusOK, gin.H{"status": "received"})
-			})
-
 			// Update Agent Metadata (Tags & Group) - Admin -> Server
 			protected.POST("/agent/metadata", func(c *gin.Context) {
 				var req struct {
@@ -740,17 +734,27 @@ func main() {
 				}
 
 				downloadURL := fmt.Sprintf("http://%s/dl/OnPremX-Agent.exe", serverHost)
+				agentHash := getAgentHash()
 
-				// Robust PowerShell update script for OLD agents (v0.0.14 and below)
-				// This script will be sent as an "exec" command.
+				// Robust PowerShell update script for agents
+				// This includes SHA256 hash verification for integrity
 				updateScriptTemplate := `
 $url = "%s";
+$expectedHash = "%s";
 $dest = "$env:TEMP\OnPremX-Agent.new.exe";
 $proc = Get-Process OnPremX-Agent -ErrorAction SilentlyContinue | Select-Object -First 1;
 $oldPath = if ($proc) { $proc.Path } else { "C:\OnPremX-Agent.exe" };
 
 try {
     (New-Object System.Net.WebClient).DownloadFile($url, $dest);
+    
+    if ($expectedHash -ne "") {
+        $actualHash = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower();
+        if ($actualHash -ne $expectedHash.ToLower()) {
+            throw "Hash mismatch! Expected: $expectedHash, Actual: $actualHash";
+        }
+    }
+
     $batch = "@echo off` + "\r\n" + `
 timeout /t 5 /nobreak > nul
 sc stop OnPremXAgent > nul 2>&1
@@ -771,7 +775,7 @@ del ""%%~f0""
 
 				for _, hostname := range hostnames {
 					// We send it as "exec" so OLD agents can process it
-					finalScript := strings.Replace(updateScriptTemplate, "%s", downloadURL, 1)
+					finalScript := fmt.Sprintf(updateScriptTemplate, downloadURL, agentHash)
 					cmd := Command{
 						ID:        fmt.Sprintf("update-%d", time.Now().UnixNano()),
 						AgentID:   hostname,
@@ -937,6 +941,22 @@ del ""%%~f0""
 				}
 
 				if cmdStr != "" {
+					// Persist Desired State in DB
+					var agent AgentData
+					if err := db.First(&agent, "hostname = ?", req.Hostname).Error; err == nil {
+						switch req.Action {
+						case "block_usb":
+							agent.DesiredSecurity.USBBlocked = true
+						case "allow_usb":
+							agent.DesiredSecurity.USBBlocked = false
+						case "block_rdp":
+							agent.DesiredSecurity.RDPBlocked = true
+						case "allow_rdp":
+							agent.DesiredSecurity.RDPBlocked = false
+						}
+						db.Save(&agent)
+					}
+
 					queueCommand(req.Hostname, cmdStr)
 					c.JSON(http.StatusOK, gin.H{"status": "security_command_queued", "action": req.Action})
 				} else {
@@ -1050,13 +1070,26 @@ del ""%%~f0""
 		c.FileFromFS("index.html", httpFS)
 	})
 
-	fmt.Println("🚀 OnPremX Admin Server running on :8080")
-	fmt.Println("🌐 Open Dashboard at: http://localhost:8080/")
+	fmt.Println("🚀 OnPremX Admin Server starting...")
+	
+	certFile := "cert.pem"
+	keyFile := "key.pem"
 
-	if err := r.Run(":8080"); err != nil {
-		fmt.Printf("❌ Error starting server: %v\n", err)
-		fmt.Println("\nPress Enter to exit...")
-		fmt.Scanln()
+	_, errCert := os.Stat(certFile)
+	_, errKey := os.Stat(keyFile)
+
+	if errCert == nil && errKey == nil {
+		fmt.Println("🔒 HTTPS enabled (using cert.pem and key.pem)")
+		fmt.Println("🌐 Access Dashboard at: https://localhost:8443/")
+		if err := r.RunTLS(":8443", certFile, keyFile); err != nil {
+			fmt.Printf("❌ Error starting HTTPS server: %v\n", err)
+		}
+	} else {
+		fmt.Println("⚠️ HTTPS not enabled (cert.pem or key.pem missing)")
+		fmt.Println("🌐 Access Dashboard at: http://localhost:8080/")
+		if err := r.Run(":8080"); err != nil {
+			fmt.Printf("❌ Error starting HTTP server: %v\n", err)
+		}
 	}
 }
 
@@ -1073,36 +1106,57 @@ func queueCommand(hostname, command string) {
 	db.Create(&cmd)
 }
 
+// Helper to get SHA256 of Agent Binary
+func getAgentHash() string {
+	data, err := os.ReadFile("./downloads/OnPremX-Agent.exe")
+	if err != nil {
+		return ""
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
+}
+
 // Auth Middleware
 func authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// TEMPORARY: Disable Auth for immediate access
-		// tokenString := c.GetHeader("Authorization")
-		// if tokenString == "" {
-		// 	tokenString = c.Query("token")
-		// }
+		tokenString := c.GetHeader("Authorization")
+		if tokenString == "" {
+			tokenString = c.Query("token")
+		}
 
-		// if tokenString == "" {
-		// 	c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization token required"})
-		// 	c.Abort()
-		// 	return
-		// }
+		if tokenString == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization token required"})
+			c.Abort()
+			return
+		}
 
-		// tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
 
-		// claims := &Claims{}
-		// token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		// 	return jwtSecretKey, nil
-		// })
+		claims := &Claims{}
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+			return jwtSecretKey, nil
+		})
 
-		// if err != nil || !token.Valid {
-		// 	c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-		// 	c.Abort()
-		// 	return
-		// }
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
 
-		// c.Set("username", claims.Username)
-		c.Set("username", "admin")
+		c.Set("username", claims.Username)
+		c.Next()
+	}
+}
+
+// Agent Auth Middleware
+func agentAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		agentKey := c.GetHeader("X-Agent-Key")
+		if agentKey != AgentSecretKey {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized Agent"})
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }

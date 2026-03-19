@@ -1158,7 +1158,9 @@ function ConsoleTab({ agent, scripts }: { agent: AgentData, scripts: Script[] })
     if (missing.length > 0) return alert("Please fill all fields");
     
     promptData.keys.forEach(k => {
-      finalCmd = finalCmd.replace(new RegExp(k.replace('[','\\[').replace(']','\\]'), 'g'), promptData.values[k]);
+      // Security: Escape single quotes for PowerShell single-quoted strings
+      const escapedValue = (promptData.values[k] || '').replace(/'/g, "''");
+      finalCmd = finalCmd.replace(new RegExp(k.replace('[','\\[').replace(']','\\]'), 'g'), escapedValue);
     });
     
     runCommand(finalCmd);

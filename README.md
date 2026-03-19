@@ -21,12 +21,13 @@ A professional, high-performance, and secure Remote Monitoring and Management (R
 *   **Enhanced Maintenance**: Multi-profile temp file cleaner (System + all User profiles).
 *   **Security Logs**: Real-time collection of Windows Event Logs and system errors.
 
-### 🛡️ Security & Integrity (New!)
-*   **VPN Tracking**: Discover active VPN connections and verify Public IP Geo-locations.
-*   **Network Port Audit**: Monitor all "Listening" ports to catch unauthorized backdoors.
-*   **WiFi Security Scanner**: Identify unsecure/open WiFi connections on mobile endpoints.
-*   **DNS Hijack Guard**: Audit system DNS settings to prevent phishing redirections.
-*   **Interactive Domain Firewall**: Block or Whitelist domains with real-time popup prompts and automatic blocklist scanning.
+### 🛡️ Security & Integrity (Fortress Update!)
+*   **Mandatory Admin Auth (JWT)**: Dashboard access is secured via JSON Web Tokens for administrative operations.
+*   **Authorized Agent Auth (X-Agent-Key)**: Exclusive "Shared Secret" key system – prevents unknown agents from connecting.
+*   **HTTPS (SSL/TLS) Support**: Full support for encrypted communication between browsers, agents, and the server.
+*   **Update Verification (SHA256)**: Automated binary updates are verified for integrity before installation.
+*   **Persistent Policy Enforcement**: Agents automatically "re-lock" USB/RDP ports if local policies are violated.
+*   **Input Sanitization Guard**: Automated PowerShell escaping prevents command injection through UI parameters.
 
 ### ⚡ Performance & Automation (New!)
 *   **Permanent RAM Optimizer**: Background "Set-and-Forget" scheduling for 24/7 memory performance.
@@ -47,7 +48,7 @@ cd ..
 go build -o OnPremX-Admin.exe main.go
 .\OnPremX-Admin.exe
 ```
-*Access via: `http://localhost:8080` (Default: admin/opx@123)*
+*Access via: `http://localhost:8080` or `https://localhost:8443` (Default: admin/opx@123)*
 
 ### 2. Deploy Agent
 Deployment is simple via the Dashboard header:

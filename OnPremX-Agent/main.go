@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
+	"crypto/tls"
 	"net"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -32,6 +32,12 @@ var (
 	ServiceName   = "OnPremXAgent"
 	BaseServerURL = "http://192.168.1.4:8080"
 	CheckInterval = 10 * time.Second
+
+	// Agent Authentication Key (Must match Admin)
+	AgentSecretKey = "OPX-Agent-Secret-2026"
+
+	// Security: Skip TLS Verification
+	SkipTLSVerify = true // Default true for internal self-signed development, set to false for production CA
 )
 
 // Dynamic URLs (updated from config)
@@ -59,6 +65,11 @@ func init() {
 	ServerURL = BaseServerURL + "/api/heartbeat"
 	ResultURL = BaseServerURL + "/api/command/result"
 	ScreenshotURL = BaseServerURL + "/api/agent/screenshot"
+
+	// Configure HTTP Client
+	if SkipTLSVerify {
+		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 }
 
 type myService struct{}
@@ -138,6 +149,9 @@ func runAgent() {
 
 		// Always send security info (USB/RDP status)
 		sysInfo.Security = getSecurityInfo()
+
+		// Policy Enforcement
+		enforcePolicies()
 
 		go sendHeartbeat(sysInfo)
 
@@ -682,7 +696,14 @@ func sendHeartbeat(info SystemInfo) {
 		return
 	}
 
-	resp, err := http.Post(ServerURL, "application/json", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", ServerURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Key", AgentSecretKey)
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("⚠️ Server unreachable: %v\n", err)
 		return
@@ -690,21 +711,45 @@ func sendHeartbeat(info SystemInfo) {
 	defer resp.Body.Close()
 
 	var response struct {
-		Status       string   `json:"status"`
-		Command      *Command `json:"command"`
-		AdminActive  bool     `json:"admin_active"`
-		StreamScreen bool     `json:"stream_screen"` // New Field
+		Status          string       `json:"status"`
+		Command         *Command     `json:"command"`
+		AdminActive     bool         `json:"admin_active"`
+		StreamScreen    bool         `json:"stream_screen"`
+		DesiredSecurity SecurityInfo `json:"desired_security"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err == nil {
 		stateMutex.Lock()
 		adminActive = response.AdminActive
 		streamScreen = response.StreamScreen
+		desiredSecurity = response.DesiredSecurity
 		stateMutex.Unlock()
 
 		if response.Command != nil {
 			go executeCommand(*response.Command)
 		}
+	}
+}
+
+var desiredSecurity SecurityInfo
+
+func enforcePolicies() {
+	stateMutex.RLock()
+	target := desiredSecurity
+	stateMutex.RUnlock()
+
+	current := getSecurityInfo()
+
+	// Enforce USB Policy
+	if target.USBBlocked && !current.USBBlocked {
+		log.Println("🛡️ Policy Violation: USB is not blocked. Re-blocking...")
+		exec.Command("powershell", "-NoProfile", "-Command", `Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\USBSTOR" -Name "Start" -Value 4 -Force`).Run()
+	}
+
+	// Enforce RDP Policy
+	if target.RDPBlocked && !current.RDPBlocked {
+		log.Println("🛡️ Policy Violation: RDP is not blocked. Re-blocking...")
+		exec.Command("powershell", "-NoProfile", "-Command", `Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 1 -Force`).Run()
 	}
 }
 
@@ -753,7 +798,11 @@ func executeCommand(cmd Command) {
 		"error":      errorStr,
 	}
 	jsonResult, _ := json.Marshal(result)
-	http.Post(ResultURL, "application/json", bytes.NewBuffer(jsonResult))
+	
+	req, _ := http.NewRequest("POST", ResultURL, bytes.NewBuffer(jsonResult))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Key", AgentSecretKey)
+	http.DefaultClient.Do(req)
 }
 
 func handleSelfUpdate(cmd Command) {
@@ -886,7 +935,11 @@ func captureAndSendScreen() {
 		"image":    base64Img,
 	}
 	jsonData, _ := json.Marshal(data)
-	http.Post(ScreenshotURL, "application/json", bytes.NewBuffer(jsonData))
+	
+	req, _ := http.NewRequest("POST", ScreenshotURL, bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Key", AgentSecretKey)
+	http.DefaultClient.Do(req)
 }
 
 func cachedHostname() string {
